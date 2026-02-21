@@ -32,6 +32,8 @@
 # script, and assembly embedding. Symbol prefixes prevent conflicts when
 # multiple binaries export the same variable names.
 
+__version__ = "0.1.0"
+
 import json
 import os
 import re

@@ -44,41 +44,38 @@ set(ULP_INCLUDE_DIRS
     ${COMPONENT_INCLUDES}
 )
 
+# Base path for external libraries (relative to this file)
+set(LIBS_DIR "${CMAKE_CURRENT_LIST_DIR}/../libs")
+
 # ---- Project sources ----
 target_sources(${ULP_APP_NAME} PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/main.c
     ${CMAKE_CURRENT_LIST_DIR}/ulp_app.c
 )
 
-# ---- External library: elert_c_bmx160 ----
-# Linked directly from the shared collar library — no symlinks needed
-set(BMX160_DIR "${CMAKE_CURRENT_LIST_DIR}/../../collar/lib/elert_c_bmx160/src")
-add_library(elert_bmx160 STATIC
-    "${BMX160_DIR}/bmx160.c"
+# ---- External library: example_i2c ----
+# Linked from the project's libs/ directory — no symlinks needed
+add_library(example_i2c STATIC
+    "${LIBS_DIR}/example_i2c/example_i2c.c"
 )
-target_include_directories(elert_bmx160 PUBLIC "${BMX160_DIR}")
-target_compile_definitions(elert_bmx160 PRIVATE ${ULP_PLATFORM_DEFINES} BMX160_FLOAT_OPS=0)
-target_include_directories(elert_bmx160 PRIVATE ${ULP_INCLUDE_DIRS})
+target_include_directories(example_i2c PUBLIC "${LIBS_DIR}/example_i2c")
+target_compile_definitions(example_i2c PRIVATE ${ULP_PLATFORM_DEFINES})
+target_include_directories(example_i2c PRIVATE ${ULP_INCLUDE_DIRS})
 
-# ---- External library: elert_c_i2c ----
-set(I2C_DIR "${CMAKE_CURRENT_LIST_DIR}/../../collar/lib/elert_c_i2c/src")
-add_library(elert_i2c STATIC
-    "${I2C_DIR}/elert_i2c_simple.c"
-    "${I2C_DIR}/elert_i2c_lock.c"
-    "${I2C_DIR}/soft_i2c_simple.c"
-    "${I2C_DIR}/soft_i2c_ulp.c"
+# ---- External library: example_sensor ----
+# Depends on example_i2c (demonstrates inter-library dependencies)
+add_library(example_sensor STATIC
+    "${LIBS_DIR}/example_sensor/example_sensor.c"
 )
-target_include_directories(elert_i2c PUBLIC "${I2C_DIR}")
-target_compile_definitions(elert_i2c PRIVATE ${ULP_PLATFORM_DEFINES})
-target_include_directories(elert_i2c PRIVATE ${ULP_INCLUDE_DIRS})
-
-# bmx160 depends on i2c headers (bmx160.h includes elert_i2c.h)
-target_link_libraries(elert_bmx160 PRIVATE elert_i2c)
+target_include_directories(example_sensor PUBLIC "${LIBS_DIR}/example_sensor")
+target_compile_definitions(example_sensor PRIVATE ${ULP_PLATFORM_DEFINES})
+target_include_directories(example_sensor PRIVATE ${ULP_INCLUDE_DIRS})
+target_link_libraries(example_sensor PRIVATE example_i2c)
 
 # Link libraries to the ULP executable
-target_link_libraries(${ULP_APP_NAME} PRIVATE elert_bmx160 elert_i2c)
+target_link_libraries(${ULP_APP_NAME} PRIVATE example_i2c example_sensor)
 
-# ---- Subdirectory library (proves add_subdirectory works) ----
+# ---- Subdirectory library (demonstrates add_subdirectory) ----
 add_subdirectory(lib)
 target_link_libraries(${ULP_APP_NAME} PRIVATE ulp_helpers)
 

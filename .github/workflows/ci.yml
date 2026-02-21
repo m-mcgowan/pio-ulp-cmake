@@ -1,0 +1,161 @@
+# SPDX-FileCopyrightText: 2026 Mat McGowan
+# SPDX-License-Identifier: MIT
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  PLATFORMIO_PLATFORM_VERSION: "55.3.36"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install lint tools
+        run: pip install flake8
+
+      - name: flake8
+        run: flake8 scripts/
+
+      - name: ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: scripts tests
+          severity: warning
+
+  test-standalone:
+    name: Test (standalone extra_scripts)
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/packages
+            ~/.platformio/platforms
+          key: pio-${{ runner.os }}-${{ env.PLATFORMIO_PLATFORM_VERSION }}-${{ hashFiles('sdkconfig.defaults') }}
+          restore-keys: |
+            pio-${{ runner.os }}-${{ env.PLATFORMIO_PLATFORM_VERSION }}-
+
+      - name: Install PlatformIO
+        run: |
+          pip install platformio
+          pio pkg install -g -p "espressif32@${{ env.PLATFORMIO_PLATFORM_VERSION }}"
+
+      - name: Run integration tests (standalone)
+        run: ./tests/test_ulp_cmake.sh -v
+
+  test-integrated:
+    name: Test (pioarduino integration)
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/packages
+          key: pio-integrated-${{ runner.os }}-${{ env.PLATFORMIO_PLATFORM_VERSION }}-${{ hashFiles('sdkconfig.defaults') }}
+          restore-keys: |
+            pio-integrated-${{ runner.os }}-${{ env.PLATFORMIO_PLATFORM_VERSION }}-
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Clone and patch pioarduino platform
+        run: |
+          # Clone the pioarduino platform
+          git clone --depth 1 https://github.com/pioarduino/platform-espressif32.git \
+            /tmp/platform-espressif32
+
+          # Apply integration patch
+          ./scripts/patch_pioarduino.sh /tmp/platform-espressif32 scripts/pio_ulp_cmake.py
+
+          # Install patched platform as a local package
+          pio pkg install -g -p "file:///tmp/platform-espressif32"
+
+      - name: Configure for integrated mode
+        run: |
+          # Remove extra_scripts (the patched platform handles it natively)
+          sed -i '/^extra_scripts/d' platformio.ini
+
+          # Point to the locally installed patched platform
+          sed -i 's|^platform = .*|platform = espressif32|' platformio.ini
+
+          echo "--- platformio.ini ---"
+          cat platformio.ini
+
+      - name: Run integration tests (integrated)
+        run: ./tests/test_ulp_cmake.sh -v
+
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    needs: [test-standalone, test-integrated]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from CHANGELOG
+        id: version
+        run: |
+          # Get the first version heading (latest release)
+          version=$(grep -oP '(?<=## \[)\d+\.\d+\.\d+' CHANGELOG.md | head -1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Version: $version"
+
+      - name: Create release archive
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          staging="pio-ulp-cmake-${version}"
+          mkdir -p "$staging"
+
+          cp scripts/pio_ulp_cmake.py "$staging/"
+          cp scripts/patch_pioarduino.sh "$staging/"
+          cp README.md "$staging/"
+          cp LICENSE "$staging/"
+          cp CHANGELOG.md "$staging/"
+
+          tar czf "pio-ulp-cmake-${version}.tar.gz" "$staging"
+
+          # Also keep the standalone script as a separate artifact
+          cp scripts/pio_ulp_cmake.py "pio_ulp_cmake-${version}.py"
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-archive
+          path: pio-ulp-cmake-*.tar.gz
+          retention-days: 90
+
+      - name: Upload standalone script
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-script
+          path: pio_ulp_cmake-*.py
+          retention-days: 90

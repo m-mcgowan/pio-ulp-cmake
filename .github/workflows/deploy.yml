@@ -1,0 +1,68 @@
+# SPDX-FileCopyrightText: 2026 Mat McGowan
+# SPDX-License-Identifier: MIT
+
+name: Deploy
+
+# Triggered when a draft release is published (marked as non-draft)
+on:
+  release:
+    types: [published]
+
+jobs:
+  deploy:
+    name: Deploy release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ github.event.release.tag_name }}"
+          version="${tag#v}"
+
+          echo "Deploying version: $version (tag: $tag)"
+
+          # Verify expected assets exist on the release
+          assets=$(gh release view "$tag" --json assets --jq '.assets[].name')
+          echo "Release assets:"
+          echo "$assets"
+
+          if ! echo "$assets" | grep -q "pio-ulp-cmake-${version}.tar.gz"; then
+            echo "Warning: release archive not found in assets" >&2
+          fi
+
+          if ! echo "$assets" | grep -q "pio_ulp_cmake-${version}.py"; then
+            echo "Warning: standalone script not found in assets" >&2
+          fi
+
+      # ---------------------------------------------------------------
+      # Deployment channels
+      #
+      # This project is a PlatformIO extra_scripts tool distributed as a
+      # single Python file. Users copy it into their project. The primary
+      # distribution channel is GitHub Releases.
+      #
+      # Future channels to consider:
+      #
+      # - PlatformIO Library Registry: register as a tool library so
+      #   users can `pio pkg install` it. Requires a library.json manifest.
+      #
+      # - pioarduino PR: automatically open a PR against
+      #   pioarduino/platform-espressif32 to integrate the latest version.
+      #   Use scripts/patch_pioarduino.sh as the basis for the PR diff.
+      # ---------------------------------------------------------------
+
+      - name: Log deployment
+        run: |
+          tag="${{ github.event.release.tag_name }}"
+          echo "Release $tag published successfully."
+          echo ""
+          echo "Distribution:"
+          echo "  - GitHub Release: https://github.com/${{ github.repository }}/releases/tag/$tag"
+          echo ""
+          echo "Users can install by copying pio_ulp_cmake.py into their project:"
+          echo "  curl -L https://github.com/${{ github.repository }}/releases/download/$tag/pio_ulp_cmake-${tag#v}.py -o scripts/pio_ulp_cmake.py"

@@ -28,12 +28,11 @@
 #
 # Test 4 — External library linking
 #   Inspects the ulp_main ULP ELF to confirm that functions from external
-#   libraries (elert_i2c via add_library + target_link_libraries) and
-#   subdirectory libraries (ulp_helpers via add_subdirectory) are linked in.
-#   Also checks that libelert_bmx160.a was compiled — the bmx160 symbols
-#   themselves may be removed by --gc-sections since only the MCU (not the
-#   ULP) calls bmx160_init, but compilation proves the CMake library
-#   integration works.
+#   libraries (example_i2c, example_sensor via add_library +
+#   target_link_libraries) and subdirectory libraries (ulp_helpers via
+#   add_subdirectory) are linked into the ULP binary. Also checks that
+#   libexample_sensor.a was compiled, proving the CMake library integration
+#   and inter-library dependencies work correctly.
 #
 # Test 5 — Firmware symbol linkage
 #   Checks the main firmware ELF (xtensa) for ULP-related symbols:
@@ -212,7 +211,7 @@ if [[ -f "$ULP_MAIN_ELF" ]]; then
     SYMBOLS=$("$NM" "$ULP_MAIN_ELF" 2>/dev/null || true)
 
     # Functions from external libraries that survive --gc-sections
-    for sym in elert_create_simple_i2c ulp_helpers_get_magic; do
+    for sym in i2c_init sensor_init ulp_helpers_get_magic; do
         if echo "$SYMBOLS" | grep -q "$sym"; then
             pass "ulp_main ELF contains $sym"
         else
@@ -229,11 +228,16 @@ if [[ -f "$ULP_MAIN_ELF" ]]; then
         fi
     done
 
-    # Verify external library was compiled (static archive exists)
-    if [[ -f "$ULP_BUILD_DIR/ulp_main/libelert_bmx160.a" ]]; then
-        pass "libelert_bmx160.a compiled"
+    # Verify external libraries were compiled (static archives exist)
+    if [[ -f "$ULP_BUILD_DIR/ulp_main/libexample_sensor.a" ]]; then
+        pass "libexample_sensor.a compiled"
     else
-        fail "libelert_bmx160.a not found"
+        fail "libexample_sensor.a not found"
+    fi
+    if [[ -f "$ULP_BUILD_DIR/ulp_main/libexample_i2c.a" ]]; then
+        pass "libexample_i2c.a compiled"
+    else
+        fail "libexample_i2c.a not found"
     fi
 else
     skip "ulp_main.elf not found"

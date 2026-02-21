@@ -1,0 +1,106 @@
+# SPDX-FileCopyrightText: 2026 Mat McGowan
+# SPDX-License-Identifier: MIT
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.1.0). Must match a CHANGELOG entry."
+        required: true
+        type: string
+
+jobs:
+  create-release:
+    name: Create draft release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate version in CHANGELOG
+        run: |
+          version="${{ inputs.version }}"
+          if ! grep -q "## \[$version\]" CHANGELOG.md; then
+            echo "Error: Version $version not found in CHANGELOG.md" >&2
+            exit 1
+          fi
+
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          version="${{ inputs.version }}"
+          # Extract the section between this version's heading and the next
+          # heading (or EOF). Uses awk to capture lines between ## [version]
+          # and the next ## [
+          body=$(awk -v ver="$version" '
+            /^## \[/ {
+              if (found) exit
+              if (index($0, "[" ver "]")) found=1
+              next
+            }
+            found { print }
+          ' CHANGELOG.md)
+
+          # Write to file to preserve formatting
+          echo "$body" > /tmp/release_notes.md
+          echo "--- Release notes ---"
+          cat /tmp/release_notes.md
+
+      - name: Find latest CI artifacts
+        id: artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Find the latest successful CI workflow run on main
+          run_id=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?branch=main&status=success&per_page=1" \
+            --jq '.workflow_runs[0].id')
+
+          if [[ -z "$run_id" || "$run_id" == "null" ]]; then
+            echo "Error: No successful CI run found on main" >&2
+            exit 1
+          fi
+
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "Found CI run: $run_id"
+
+      - name: Download CI artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          run_id="${{ steps.artifacts.outputs.run_id }}"
+          mkdir -p /tmp/artifacts
+
+          # Download each artifact
+          gh run download "$run_id" -n release-archive -D /tmp/artifacts/archive || true
+          gh run download "$run_id" -n release-script -D /tmp/artifacts/script || true
+
+          echo "--- Downloaded artifacts ---"
+          find /tmp/artifacts -type f
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${{ inputs.version }}"
+          tag="v${version}"
+
+          # Collect all artifact files
+          files=()
+          for f in /tmp/artifacts/archive/* /tmp/artifacts/script/*; do
+            [[ -f "$f" ]] && files+=("$f")
+          done
+
+          # Create the draft release
+          gh release create "$tag" \
+            --draft \
+            --title "v${version}" \
+            --notes-file /tmp/release_notes.md \
+            "${files[@]}"
+
+          echo "Draft release created: v${version}"
+          echo "Review and publish at: https://github.com/${{ github.repository }}/releases/tag/$tag"
