@@ -76,12 +76,20 @@ def parse_ulp_projects(env):
 
 
 def _parse_sdkconfig_defaults(project_dir):
-    """Parse sdkconfig.defaults to extract ULP-related config.
+    """Parse sdkconfig files to extract ULP-related config.
+
+    Checks sdkconfig.defaults, sdkconfig, and PlatformIO env-specific
+    sdkconfig.<env> files (e.g. sdkconfig.esp32s3-idf).
 
     Returns a dict of CONFIG_* keys to values.
     """
     config = {}
-    for name in ("sdkconfig.defaults", "sdkconfig"):
+    candidates = ["sdkconfig.defaults", "sdkconfig"]
+    # Also check PIO env-specific sdkconfig.<env> files
+    for f in sorted(Path(project_dir).iterdir()):
+        if f.name.startswith("sdkconfig.") and f.name != "sdkconfig.defaults" and f.is_file():
+            candidates.append(f.name)
+    for name in candidates:
         path = Path(project_dir) / name
         if path.exists():
             with open(path) as f:
@@ -470,37 +478,26 @@ def _standalone_main(env):
 
     env.SConscript = _intercept_sconscript
 
-    # Set up toolchain environment
+    # Set up build environment.
+    # PlatformIO's LoadPioPlatform() already adds all installed toolchain
+    # packages (including cross-arch ULP toolchains like riscv32 on xtensa
+    # MCUs) to env['ENV']['PATH'] which is os.environ directly. We only
+    # need to ensure non-toolchain tools (ninja) and IDF_PATH are set.
     platform = env.PioPlatform()
     framework_dir = platform.get_package_dir("framework-espidf")
-    is_xtensa = env.BoardConfig().get("build.mcu", "") in (
-        "esp32", "esp32s2", "esp32s3"
-    )
 
     ulp_env = env.Clone()
     ulp_env["__PIO_ULP_ORIG_ENV"] = env
     ulp_env.PrependENVPath("IDF_PATH", framework_dir)
 
-    toolchain_path = platform.get_package_dir(
-        "toolchain-xtensa-esp-elf" if is_xtensa else "toolchain-riscv32-esp"
-    )
-
     sdk_config = _get_sdk_config(env.subst("$PROJECT_DIR"), env.subst("$BUILD_DIR"))
 
-    toolchain_path_ulp = platform.get_package_dir(
-        "toolchain-esp32ulp"
-        if sdk_config.get("CONFIG_ULP_COPROC_TYPE_FSM", "") == "y"
-        else None
-    )
-
-    for package in [
-        toolchain_path,
-        toolchain_path_ulp,
-        platform.get_package_dir("tool-ninja"),
-        str(Path(platform.get_package_dir("tool-cmake")) / "bin"),
-    ]:
-        if package and os.path.isdir(package):
-            ulp_env.PrependENVPath("PATH", package)
+    # Ninja must be on PATH for cmake -GNinja. tool-cmake is invoked by
+    # full path so it doesn't need to be on PATH, but ninja is called
+    # internally by cmake.
+    ninja_dir = platform.get_package_dir("tool-ninja")
+    if ninja_dir and os.path.isdir(ninja_dir):
+        ulp_env.PrependENVPath("PATH", ninja_dir)
 
     # Build each registered project
     for app_name, ulp_dir, prefix in projects:
@@ -571,24 +568,10 @@ def integrated_main(env, sdk_config, project_config, app_includes, idf_variant):
     ulp_env["__PIO_ULP_ORIG_ENV"] = env
     ulp_env.PrependENVPath("IDF_PATH", framework_dir)
 
-    is_xtensa = idf_variant in ("esp32", "esp32s2", "esp32s3")
-    toolchain_path = platform.get_package_dir(
-        "toolchain-xtensa-esp-elf" if is_xtensa else "toolchain-riscv32-esp"
-    )
-    toolchain_path_ulp = platform.get_package_dir(
-        "toolchain-esp32ulp"
-        if sdk_config.get("ULP_COPROC_TYPE_FSM", False)
-        else None
-    )
-
-    for package in [
-        toolchain_path,
-        toolchain_path_ulp,
-        platform.get_package_dir("tool-ninja"),
-        str(Path(platform.get_package_dir("tool-cmake")) / "bin"),
-    ]:
-        if package and os.path.isdir(package):
-            ulp_env.PrependENVPath("PATH", package)
+    # Toolchains are already on PATH via LoadPioPlatform(). Only add ninja.
+    ninja_dir = platform.get_package_dir("tool-ninja")
+    if ninja_dir and os.path.isdir(ninja_dir):
+        ulp_env.PrependENVPath("PATH", ninja_dir)
 
     # Get includes with framework context
     comp_includes_list = _get_comp_includes(project_config, "ulp_main")
