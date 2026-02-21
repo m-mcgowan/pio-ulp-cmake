@@ -1,30 +1,67 @@
-# pio_ulp_cmake — Custom ULP CMake Build Support for PlatformIO
+# pio_ulp_cmake — Full CMake ULP Builds for PlatformIO
 
 ## Why this exists
 
-PlatformIO's built-in ULP builder (`ulp.py` in the pioarduino platform
-package) has significant limitations:
+PlatformIO's built-in ULP builder (`ulp.py` in the
+[pioarduino platform](https://github.com/pioarduino/platform-espressif32))
+does not use your project's CMakeLists.txt. It bypasses CMake's project model
+entirely, which means several standard ESP-IDF build features don't work.
 
-- **No CMakeLists.txt support.** It ignores any `CMakeLists.txt` in the ULP
-  directory. Instead, it flat-globs all `*.c` and `*.S` files and passes them
-  to CMake via `-DULP_S_SOURCES`. You can't use `add_library()`,
-  `add_subdirectory()`, or `target_compile_definitions()`.
+### What the stock builder does
 
-- **No external libraries.** Linking a shared library (e.g. an I2C driver
-  used by both the MCU and the ULP) requires symlinking sources into the ULP
-  directory. There's no way to use `target_link_libraries()`.
+The stock `ulp.py` collects all `.c` and `.S` files from the `ulp/` directory
+with a flat glob and passes them as a semicolon-separated list to CMake's
+generic ULP entry point:
 
-- **Single binary only.** The binary name is hardcoded to `ulp_main`. There's
-  no way to build multiple ULP programs in one project, which is needed when
-  different coprocessor tasks need separate binaries.
+```python
+# ulp.py — collect_ulp_sources()
+return [
+    str(Path(ulp_env.subst("$PROJECT_DIR")) / "ulp" / f)
+    for f in os.listdir(str(Path(ulp_env.subst("$PROJECT_DIR")) / "ulp"))
+    if f.endswith((".c", ".S", ".s"))
+]
+```
 
-- **No symbol prefixes.** All exported ULP variables use the `ulp_` prefix.
-  If two ULP binaries export a variable with the same name (e.g. `count`),
-  they collide.
+```python
+# ulp.py — generate_ulp_config()
+"-DULP_S_SOURCES=%s" % ";".join([...]),
+"-DULP_APP_NAME=ulp_main",
+"-DCOMPONENT_DIR=" + str(Path(ulp_env.subst("$PROJECT_DIR")) / "ulp"),
+```
 
-ESP-IDF's native build system (`idf.py`) supports all of this through
-`ulp_add_project()` and standard CMake. `pio_ulp_cmake.py` brings that
-capability to PlatformIO.
+Your CMakeLists.txt is never read. CMake is invoked with `-B <build_dir>
+<idf_components>/ulp/cmake` — the IDF's generic cmake directory is the
+source, not your project.
+
+### What doesn't work
+
+**No CMakeLists.txt support.** Any `CMakeLists.txt` in your ULP directory is
+ignored. You can't use `add_library()`, `add_subdirectory()`,
+`target_link_libraries()`, `target_compile_definitions()`, or
+`target_include_directories()`. If your ULP code needs a static library or
+has subdirectories, you're stuck.
+
+**Hardcoded single binary.** The app name `ulp_main` and all output filenames
+(`ulp_main.h`, `ulp_main.ld`, `ulp_main.bin`, `ulp_main.bin.S`) are
+hardcoded. There is no way to build multiple ULP programs in one project.
+
+**Hardcoded source directory.** The ULP source directory is hardcoded to
+`ulp/`. LP Core examples that use `lp_core/` as their source directory
+require renaming.
+
+**No symbol prefix control.** All exported ULP variables get the `ulp_`
+prefix. If you could build two ULP binaries (you can't, but hypothetically),
+variables with the same name would collide.
+
+### What ESP-IDF supports natively
+
+ESP-IDF's own build system handles all of this through `ulp_add_project()`
+and standard CMake. The
+[lp_core/build_system](https://github.com/espressif/esp-idf/tree/master/examples/system/ulp/lp_core/build_system)
+example demonstrates `add_library()`, `target_link_libraries()`, and custom
+CMakeLists.txt — none of which work with PlatformIO's stock builder.
+
+`pio_ulp_cmake.py` brings that capability to PlatformIO.
 
 ## What it does
 
@@ -115,26 +152,13 @@ ulp_add_build_binary_targets(${ULP_APP_NAME} PREFIX ${ULP_VAR_PREFIX})
 The variables `${ULP_APP_NAME}` and `${ULP_VAR_PREFIX}` are passed by the
 tool based on your `platformio.ini` configuration.
 
-For projects that link external libraries, you need to propagate ULP platform
-defines and includes to library targets (IDF only applies them to the
-executable):
+Linking external libraries follows the same pattern as IDF's own
+[build_system example](https://github.com/espressif/esp-idf/tree/master/examples/system/ulp/lp_core/build_system) —
+just `add_library()` and `target_link_libraries()`:
 
 ```cmake
-# Defines needed by libraries that use #ifdef IS_ULP_COCPU guards
-set(ULP_PLATFORM_DEFINES IS_ULP_COCPU ULP_RISCV_REGISTER_OPS)
-
-# Include paths needed by libraries that use ULP SDK headers
-set(ULP_INCLUDE_DIRS
-    "${IDF_PATH}/components/ulp/ulp_riscv/ulp_core/include"
-    "${IDF_PATH}/components/ulp/ulp_riscv/shared/include"
-    "${IDF_PATH}/components/ulp/ulp_riscv/include"
-    "${IDF_PATH}/components/riscv/include"
-    ${COMPONENT_INCLUDES}
-)
-
 add_library(my_lib STATIC path/to/source.c)
-target_compile_definitions(my_lib PRIVATE ${ULP_PLATFORM_DEFINES})
-target_include_directories(my_lib PRIVATE ${ULP_INCLUDE_DIRS})
+target_include_directories(my_lib PUBLIC path/to/include)
 target_link_libraries(${ULP_APP_NAME} PRIVATE my_lib)
 ```
 
@@ -174,13 +198,29 @@ void app_main(void) {
 }
 ```
 
-### 6. Enable ULP in `sdkconfig.defaults`
+### 6. Enable ULP in sdkconfig
+
+Create `sdkconfig.<env>` (where `<env>` matches your `[env:name]` in
+platformio.ini):
 
 ```
 CONFIG_ULP_COPROC_ENABLED=y
 CONFIG_ULP_COPROC_TYPE_RISCV=y
-CONFIG_ULP_COPROC_RESERVE_MEM=7500
+CONFIG_ULP_COPROC_RESERVE_MEM=4096
 ```
+
+## Design principle
+
+This project does **not** replicate or copy any part of ESP-IDF's ULP build
+logic. All coprocessor-specific behavior — include paths, platform defines,
+startup files, linker scripts, toolchain selection — is inferred from IDF's
+own CMake implementation (`IDFULPProject.cmake`). The same CMakeLists.txt
+works for ULP RISC-V, LP Core, and FSM without any coprocessor-specific
+hardcoding in the build tool or project templates.
+
+Similarly, toolchain PATH setup is delegated to PlatformIO's
+`LoadPioPlatform()`, which already adds all installed toolchain packages to
+`os.environ['PATH']`.
 
 ## How it works internally
 
@@ -262,34 +302,87 @@ board_build.ulp_projects =
     ulp_sensor:ulp_sensor:sensor_
 ```
 
+## Compatibility validation
+
+The `examples/` directory proves that `pio_ulp_cmake.py` compiles
+**unmodified ESP-IDF ULP examples**. Every `.c`, `.S`, and `.h` file is
+byte-for-byte identical to the original in the `framework-espidf` package.
+
+`scripts/sync_examples.sh` copies sources from the installed framework into
+PlatformIO's project layout. Each example becomes a self-contained PIO
+project with its own `platformio.ini` and `sdkconfig.<env>`. No source files
+are patched.
+
+| Example | Coprocessor | Board | What it validates |
+|---------|------------|-------|-------------------|
+| `ulp_fsm` | FSM assembly | ESP32 | Multi-file `.S` without CMakeLists.txt |
+| `ulp_riscv_gpio` | RISC-V | ESP32-S3 | Basic RISC-V ULP build |
+| `ulp_riscv_i2c` | RISC-V | ESP32-S3 | Shared header between HP and ULP code |
+| `lp_core_gpio` | LP Core | ESP32-C6 | Standard LP Core build |
+| `lp_core_build_system` | LP Core | ESP32-C6 | Custom CMakeLists.txt + static library |
+| `lp_core_interrupt` | LP Core | ESP32-C6 | Alternative app name (`lp_core_main`) |
+| `lp_core_uart_print` | LP Core | ESP32-C6 | LP UART with different source nesting |
+
+```bash
+# Sync examples from installed framework-espidf
+./scripts/sync_examples.sh
+
+# Build all examples
+for d in examples/*/; do (cd "$d" && pio run); done
+
+# Or build one
+cd examples/lp_core_build_system && pio run
+```
+
+The only layout adaptations (handled by the sync script, not by modifying
+sources):
+
+- IDF's `main/*.c` goes to PIO's `src/*.c`
+- IDF's `main/ulp/` or `main/lp_core/` goes to `ulp/`
+- Shared headers referenced as `../header.h` from ULP sources are placed at
+  the project root
+
 ## Project structure
 
 ```
-project/
-├── platformio.ini              # Platform config + ULP project registration
-├── sdkconfig.defaults          # ULP coprocessor enabled
-├── CMakeLists.txt              # Top-level IDF cmake (standard)
+pio-ulp-cmake/
 ├── scripts/
-│   └── pio_ulp_cmake.py        # This tool
-├── src/
-│   ├── CMakeLists.txt          # idf_component_register (no ulp_add_project)
-│   └── main.cpp                # Firmware code referencing ULP symbols
-├── ulp/                        # First ULP project
-│   ├── CMakeLists.txt          # Full cmake with add_library, etc.
-│   ├── main.c
-│   └── lib/                    # Subdirectory library
-│       ├── CMakeLists.txt
-│       └── helpers.c
-├── ulp_sensor/                 # Second ULP project
-│   ├── CMakeLists.txt
-│   └── sensor_main.c
+│   ├── pio_ulp_cmake.py           # The build tool
+│   └── sync_examples.sh           # Syncs ESP-IDF examples into examples/
+├── examples/                      # Verbatim ESP-IDF examples as PIO projects
+│   ├── ulp_fsm/                   # FSM assembly (ESP32)
+│   ├── ulp_riscv_gpio/            # RISC-V GPIO (ESP32-S3)
+│   ├── ulp_riscv_i2c/             # RISC-V I2C (ESP32-S3)
+│   ├── lp_core_gpio/              # LP Core GPIO (ESP32-C6)
+│   ├── lp_core_build_system/      # LP Core + custom CMake (ESP32-C6)
+│   ├── lp_core_interrupt/         # LP Core interrupt (ESP32-C6)
+│   └── lp_core_uart_print/        # LP Core UART (ESP32-C6)
 └── tests/
-    └── test_ulp_cmake.sh       # Integration tests
+    ├── test_ulp_cmake.sh          # Integration tests
+    └── fixture/                   # Multi-project test harness
+        ├── platformio.ini
+        ├── src/main.cpp
+        ├── ulp/                   # First ULP project (with subdirectory lib)
+        ├── ulp_sensor/            # Second ULP project (sensor_ prefix)
+        └── libs/                  # External libraries linked into ULP
+```
+
+Each example project follows standard PIO layout:
+
+```
+examples/ulp_riscv_gpio/
+├── platformio.ini                 # References ../../scripts/pio_ulp_cmake.py
+├── sdkconfig.esp32s3-riscv-gpio   # ULP coprocessor settings
+├── src/
+│   └── ulp_riscv_example_main.c   # Verbatim from ESP-IDF
+└── ulp/
+    └── main.c                     # Verbatim from ESP-IDF
 ```
 
 ## Running tests
 
 ```bash
+# Integration tests (multi-project builds, symbol prefixes, external libs)
 ./tests/test_ulp_cmake.sh       # run all tests
 ./tests/test_ulp_cmake.sh -v    # verbose — show build output on failure
 ```

@@ -35,8 +35,8 @@ jobs:
           scandir: scripts tests
           severity: warning
 
-  test-standalone:
-    name: Test (standalone extra_scripts)
+  test-fixture:
+    name: Test (multi-project fixture)
     runs-on: ubuntu-latest
     needs: lint
     steps:
@@ -52,7 +52,7 @@ jobs:
           path: |
             ~/.platformio/packages
             ~/.platformio/platforms
-          key: pio-${{ runner.os }}-${{ env.PLATFORMIO_PLATFORM_VERSION }}-${{ hashFiles('sdkconfig.defaults') }}
+          key: pio-${{ runner.os }}-${{ env.PLATFORMIO_PLATFORM_VERSION }}-fixture
           restore-keys: |
             pio-${{ runner.os }}-${{ env.PLATFORMIO_PLATFORM_VERSION }}-
 
@@ -61,13 +61,24 @@ jobs:
           pip install platformio
           pio pkg install -g -p "espressif32@${{ env.PLATFORMIO_PLATFORM_VERSION }}"
 
-      - name: Run integration tests (standalone)
+      - name: Run integration tests
         run: ./tests/test_ulp_cmake.sh -v
 
-  test-integrated:
-    name: Test (pioarduino integration)
+  build-examples:
+    name: "Build: ${{ matrix.example }}"
     runs-on: ubuntu-latest
     needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        example:
+          - ulp_fsm
+          - ulp_riscv_gpio
+          - ulp_riscv_i2c
+          - lp_core_gpio
+          - lp_core_build_system
+          - lp_core_interrupt
+          - lp_core_uart_print
     steps:
       - uses: actions/checkout@v4
 
@@ -80,43 +91,26 @@ jobs:
         with:
           path: |
             ~/.platformio/packages
-          key: pio-integrated-${{ runner.os }}-${{ env.PLATFORMIO_PLATFORM_VERSION }}-${{ hashFiles('sdkconfig.defaults') }}
+            ~/.platformio/platforms
+          key: pio-${{ runner.os }}-${{ env.PLATFORMIO_PLATFORM_VERSION }}-${{ matrix.example }}
           restore-keys: |
-            pio-integrated-${{ runner.os }}-${{ env.PLATFORMIO_PLATFORM_VERSION }}-
+            pio-${{ runner.os }}-${{ env.PLATFORMIO_PLATFORM_VERSION }}-
 
       - name: Install PlatformIO
-        run: pip install platformio
-
-      - name: Clone and patch pioarduino platform
         run: |
-          # Clone the pioarduino platform
-          git clone --depth 1 https://github.com/pioarduino/platform-espressif32.git \
-            /tmp/platform-espressif32
+          pip install platformio
+          pio pkg install -g -p "espressif32@${{ env.PLATFORMIO_PLATFORM_VERSION }}"
 
-          # Apply integration patch
-          ./scripts/patch_pioarduino.sh /tmp/platform-espressif32 scripts/pio_ulp_cmake.py
+      - name: Sync example from framework
+        run: ./scripts/sync_examples.sh
 
-          # Install patched platform as a local package
-          pio pkg install -g -p "file:///tmp/platform-espressif32"
-
-      - name: Configure for integrated mode
-        run: |
-          # Remove extra_scripts (the patched platform handles it natively)
-          sed -i '/^extra_scripts/d' platformio.ini
-
-          # Point to the locally installed patched platform
-          sed -i 's|^platform = .*|platform = espressif32|' platformio.ini
-
-          echo "--- platformio.ini ---"
-          cat platformio.ini
-
-      - name: Run integration tests (integrated)
-        run: ./tests/test_ulp_cmake.sh -v
+      - name: Build example
+        run: cd examples/${{ matrix.example }} && pio run
 
   package:
     name: Package
     runs-on: ubuntu-latest
-    needs: [test-standalone, test-integrated]
+    needs: [test-fixture, build-examples]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
@@ -136,7 +130,6 @@ jobs:
           mkdir -p "$staging"
 
           cp scripts/pio_ulp_cmake.py "$staging/"
-          cp scripts/patch_pioarduino.sh "$staging/"
           cp README.md "$staging/"
           cp LICENSE "$staging/"
           cp CHANGELOG.md "$staging/"

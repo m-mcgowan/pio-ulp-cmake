@@ -75,20 +75,19 @@ def parse_ulp_projects(env):
     return projects
 
 
-def _parse_sdkconfig_defaults(project_dir):
+def _parse_sdkconfig_defaults(project_dir, env_name=None):
     """Parse sdkconfig files to extract ULP-related config.
 
-    Checks sdkconfig.defaults, sdkconfig, and PlatformIO env-specific
-    sdkconfig.<env> files (e.g. sdkconfig.esp32s3-idf).
+    Reads sdkconfig.defaults and sdkconfig as base, then overlays the
+    env-specific sdkconfig.<env> file if env_name is provided and the
+    file exists.
 
     Returns a dict of CONFIG_* keys to values.
     """
     config = {}
     candidates = ["sdkconfig.defaults", "sdkconfig"]
-    # Also check PIO env-specific sdkconfig.<env> files
-    for f in sorted(Path(project_dir).iterdir()):
-        if f.name.startswith("sdkconfig.") and f.name != "sdkconfig.defaults" and f.is_file():
-            candidates.append(f.name)
+    if env_name:
+        candidates.append("sdkconfig.%s" % env_name)
     for name in candidates:
         path = Path(project_dir) / name
         if path.exists():
@@ -114,13 +113,13 @@ def _parse_sdkconfig_cmake(build_dir):
     return config
 
 
-def _get_sdk_config(project_dir, build_dir):
+def _get_sdk_config(project_dir, build_dir, env_name=None):
     """Get ULP-relevant sdkconfig values from the best available source."""
     # Prefer cmake config (from previous build) as it's fully resolved
     config = _parse_sdkconfig_cmake(build_dir)
     if not config:
-        # Fall back to sdkconfig.defaults
-        config = _parse_sdkconfig_defaults(project_dir)
+        # Fall back to sdkconfig files
+        config = _parse_sdkconfig_defaults(project_dir, env_name)
     return config
 
 
@@ -281,7 +280,8 @@ def build_ulp_project(
         idf_variant = ulp_env.BoardConfig().get("build.mcu", "esp32s3")
     if sdk_config is None:
         sdk_config = _get_sdk_config(
-            ulp_env.subst("$PROJECT_DIR"), build_dir
+            ulp_env.subst("$PROJECT_DIR"), build_dir,
+            ulp_env.subst("$PIOENV")
         )
     ulp_build_dir = str(Path(build_dir) / "ulp" / app_name)
 
@@ -479,25 +479,42 @@ def _standalone_main(env):
     env.SConscript = _intercept_sconscript
 
     # Set up build environment.
-    # PlatformIO's LoadPioPlatform() already adds all installed toolchain
-    # packages (including cross-arch ULP toolchains like riscv32 on xtensa
-    # MCUs) to env['ENV']['PATH'] which is os.environ directly. We only
-    # need to ensure non-toolchain tools (ninja) and IDF_PATH are set.
+    # Add ULP toolchains and build tools to PATH on the original env
+    # (whose ENV dict IS os.environ, so exec_command() inherits it).
+    # This mirrors what the stock ulp.py's prepare_ulp_env_vars() does.
     platform = env.PioPlatform()
     framework_dir = platform.get_package_dir("framework-espidf")
+    idf_variant = env.BoardConfig().get("build.mcu", "esp32s3")
+
+    sdk_config = _get_sdk_config(
+        env.subst("$PROJECT_DIR"), env.subst("$BUILD_DIR"),
+        env.subst("$PIOENV")
+    )
+
+    is_fsm = sdk_config.get("CONFIG_ULP_COPROC_TYPE_FSM", "") == "y"
+    is_xtensa = idf_variant in ("esp32", "esp32s2", "esp32s3")
+
+    # Main-CPU toolchain (needed by cmake for some include resolution)
+    main_toolchain = platform.get_package_dir(
+        "toolchain-xtensa-esp-elf" if is_xtensa else "toolchain-riscv32-esp"
+    )
+    # FSM ULP assembler toolchain
+    fsm_toolchain = platform.get_package_dir("toolchain-esp32ulp") if is_fsm else None
+
+    additional_packages = [
+        main_toolchain,
+        fsm_toolchain,
+        platform.get_package_dir("tool-ninja"),
+        str(Path(platform.get_package_dir("tool-cmake")) / "bin"),
+    ]
+
+    for package in additional_packages:
+        if package and os.path.isdir(package):
+            env.PrependENVPath("PATH", package)
 
     ulp_env = env.Clone()
     ulp_env["__PIO_ULP_ORIG_ENV"] = env
     ulp_env.PrependENVPath("IDF_PATH", framework_dir)
-
-    sdk_config = _get_sdk_config(env.subst("$PROJECT_DIR"), env.subst("$BUILD_DIR"))
-
-    # Ninja must be on PATH for cmake -GNinja. tool-cmake is invoked by
-    # full path so it doesn't need to be on PATH, but ninja is called
-    # internally by cmake.
-    ninja_dir = platform.get_package_dir("tool-ninja")
-    if ninja_dir and os.path.isdir(ninja_dir):
-        ulp_env.PrependENVPath("PATH", ninja_dir)
 
     # Build each registered project
     for app_name, ulp_dir, prefix in projects:

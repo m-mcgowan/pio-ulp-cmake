@@ -66,7 +66,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_DIR="$SCRIPT_DIR/fixture"
 BUILD_DIR="$PROJECT_DIR/.pio/build/esp32s3-idf"
 ULP_BUILD_DIR="$BUILD_DIR/ulp"
 
@@ -114,10 +114,11 @@ run_build() {
 
 # Save originals so we can restore them
 ORIG_INI="$(cat "$PROJECT_DIR/platformio.ini")"
-ORIG_MAIN="$(cat "$PROJECT_DIR/src/main.cpp")"
+ORIG_SRC_DIR="$PROJECT_DIR/src"
+ORIG_MAIN="$(cat "$ORIG_SRC_DIR/main.cpp")"
 restore_originals() {
     echo "$ORIG_INI" > "$PROJECT_DIR/platformio.ini"
-    echo "$ORIG_MAIN" > "$PROJECT_DIR/src/main.cpp"
+    echo "$ORIG_MAIN" > "$ORIG_SRC_DIR/main.cpp"
 }
 trap restore_originals EXIT
 
@@ -314,14 +315,14 @@ platform = espressif32@55.3.36
 board = esp32-s3-devkitc-1
 framework = espidf
 
-extra_scripts = pre:scripts/pio_ulp_cmake.py
+extra_scripts = pre:../../scripts/pio_ulp_cmake.py
 
 board_build.ulp_projects =
     ulp_main:ulp
 EOF
 
 # Simplify main.cpp to only reference ulp_main
-cat > "$PROJECT_DIR/src/main.cpp" << 'CPPEOF'
+cat > "$ORIG_SRC_DIR/main.cpp" << 'CPPEOF'
 #include <stdio.h>
 #include "esp_sleep.h"
 #include "ulp_riscv.h"
