@@ -8,6 +8,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: "0 6 * * 1"  # Weekly Monday 6am UTC
 
 jobs:
   lint:
@@ -32,16 +34,18 @@ jobs:
           scandir: scripts tests
           severity: warning
 
-  test-fixture:
-    name: "Test fixture (${{ matrix.platform_version }})"
+  # Install platform + framework once per version, then cache for downstream jobs
+  setup:
+    name: "Setup (${{ matrix.platform_version }})"
     runs-on: ubuntu-latest
     needs: lint
     strategy:
-      fail-fast: false
       matrix:
         platform_version:
-          - "55.3.37"   # IDF 5.5.2
-          - "54.3.21-2" # IDF 5.4.2
+          - "55.03.37"   # IDF 5.5.2
+          - "54.03.21-2" # IDF 5.4.2
+    env:
+      PLATFORM_URL: "https://github.com/pioarduino/platform-espressif32/releases/download/${{ matrix.platform_version }}/platform-espressif32.zip"
     steps:
       - uses: actions/checkout@v4
 
@@ -50,46 +54,72 @@ jobs:
           python-version: "3.11"
 
       - name: Cache PlatformIO
+        id: cache
         uses: actions/cache@v4
         with:
           path: |
             ~/.platformio/packages
             ~/.platformio/platforms
-          key: pio-${{ runner.os }}-${{ matrix.platform_version }}-fixture
-          restore-keys: |
-            pio-${{ runner.os }}-${{ matrix.platform_version }}-
+          key: pio-${{ runner.os }}-${{ matrix.platform_version }}
 
-      - name: Install PlatformIO
+      - name: Install PlatformIO and platform
+        if: steps.cache.outputs.cache-hit != 'true'
         run: |
           pip install platformio
-          pio pkg install -g -p "espressif32@${{ matrix.platform_version }}"
+          sed -i "s|platform = .*|platform = $PLATFORM_URL|" \
+            tests/fixture/platformio.ini
+          cd tests/fixture && pio pkg install
+
+  test-fixture:
+    name: "Test fixture (${{ matrix.platform_version }})"
+    runs-on: ubuntu-latest
+    needs: setup
+    strategy:
+      fail-fast: false
+      matrix:
+        platform_version:
+          - "55.03.37"   # IDF 5.5.2
+          - "54.03.21-2" # IDF 5.4.2
+    env:
+      PLATFORM_URL: "https://github.com/pioarduino/platform-espressif32/releases/download/${{ matrix.platform_version }}/platform-espressif32.zip"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore PlatformIO cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/packages
+            ~/.platformio/platforms
+          key: pio-${{ runner.os }}-${{ matrix.platform_version }}
+
+      - name: Install PlatformIO
+        run: pip install platformio
 
       - name: Override platform version
         run: |
-          sed -i "s/espressif32@[^ ]*/espressif32@${{ matrix.platform_version }}/" \
+          sed -i "s|platform = .*|platform = $PLATFORM_URL|" \
             tests/fixture/platformio.ini
 
       - name: Run integration tests
         run: ./tests/test_ulp_cmake.sh -v
 
   build-examples:
-    name: "Build: ${{ matrix.example }} (${{ matrix.platform_version }})"
+    name: "Build examples (${{ matrix.platform_version }})"
     runs-on: ubuntu-latest
-    needs: lint
+    needs: setup
     strategy:
       fail-fast: false
       matrix:
         platform_version:
-          - "55.3.37"   # IDF 5.5.2
-          - "54.3.21-2" # IDF 5.4.2
-        example:
-          - ulp_fsm
-          - ulp_riscv_gpio
-          - ulp_riscv_i2c
-          - lp_core_gpio
-          - lp_core_build_system
-          - lp_core_interrupt
-          - lp_core_uart_print
+          - "55.03.37"   # IDF 5.5.2
+          - "54.03.21-2" # IDF 5.4.2
+    env:
+      PLATFORM_URL: "https://github.com/pioarduino/platform-espressif32/releases/download/${{ matrix.platform_version }}/platform-espressif32.zip"
     steps:
       - uses: actions/checkout@v4
 
@@ -97,31 +127,34 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Cache PlatformIO
+      - name: Restore PlatformIO cache
         uses: actions/cache@v4
         with:
           path: |
             ~/.platformio/packages
             ~/.platformio/platforms
-          key: pio-${{ runner.os }}-${{ matrix.platform_version }}-${{ matrix.example }}
-          restore-keys: |
-            pio-${{ runner.os }}-${{ matrix.platform_version }}-
+          key: pio-${{ runner.os }}-${{ matrix.platform_version }}
 
       - name: Install PlatformIO
-        run: |
-          pip install platformio
-          pio pkg install -g -p "espressif32@${{ matrix.platform_version }}"
+        run: pip install platformio
 
-      - name: Sync example from framework
+      - name: Sync examples from framework
         run: ./scripts/sync_examples.sh
 
-      - name: Override platform version
+      - name: Override platform version in examples
         run: |
-          sed -i "s/espressif32@[^ ]*/espressif32@${{ matrix.platform_version }}/" \
-            examples/${{ matrix.example }}/platformio.ini
+          for ini in examples/*/platformio.ini; do
+            sed -i "s|platform = .*|platform = $PLATFORM_URL|" "$ini"
+          done
 
-      - name: Build example
-        run: cd examples/${{ matrix.example }} && pio run
+      - name: Build all examples
+        run: |
+          for dir in examples/*/; do
+            example="$(basename "$dir")"
+            echo "=== Building: $example ==="
+            (cd "$dir" && pio run)
+            echo ""
+          done
 
   package:
     name: Package

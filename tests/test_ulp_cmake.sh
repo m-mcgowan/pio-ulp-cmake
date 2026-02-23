@@ -70,14 +70,16 @@ PROJECT_DIR="$SCRIPT_DIR/fixture"
 BUILD_DIR="$PROJECT_DIR/.pio/build/esp32s3-idf"
 ULP_BUILD_DIR="$BUILD_DIR/ulp"
 
-# Toolchain nm — find it from PlatformIO packages
-NM="$(find "$HOME/.platformio/packages/toolchain-riscv32-esp" -name 'riscv32-esp-elf-nm' -type f 2>/dev/null | head -1)"
-if [[ -z "$NM" ]]; then
-    echo "SKIP: riscv32-esp-elf-nm not found (install toolchain-riscv32-esp)"
-    exit 0
-fi
+# Toolchain nm — resolved after first build installs toolchains
+NM=""
+XTENSA_NM=""
 
-XTENSA_NM="$(find "$HOME/.platformio/packages/toolchain-xtensa-esp-elf" -name 'xtensa-esp-elf-nm' -type f 2>/dev/null | head -1)"
+find_toolchain_nm() {
+    if [[ -z "$NM" ]]; then
+        NM="$(find "$HOME/.platformio/packages/toolchain-riscv32-esp" -name 'riscv32-esp-elf-nm' -type f 2>/dev/null | head -1 || true)"
+        XTENSA_NM="$(find "$HOME/.platformio/packages/toolchain-xtensa-esp-elf" -name 'xtensa-esp-elf-nm' -type f 2>/dev/null | head -1 || true)"
+    fi
+}
 
 VERBOSE=0
 [[ "${1:-}" == "-v" ]] && VERBOSE=1
@@ -207,8 +209,10 @@ echo ""
 echo "=== Test 4: ULP ELF symbols (external libraries linked) ==="
 # ===========================================================================
 
+find_toolchain_nm
+
 ULP_MAIN_ELF="$ULP_BUILD_DIR/ulp_main/ulp_main.elf"
-if [[ -f "$ULP_MAIN_ELF" ]]; then
+if [[ -f "$ULP_MAIN_ELF" ]] && [[ -n "$NM" ]]; then
     SYMBOLS=$("$NM" "$ULP_MAIN_ELF" 2>/dev/null || true)
 
     # Functions from external libraries that survive --gc-sections
@@ -240,6 +244,8 @@ if [[ -f "$ULP_MAIN_ELF" ]]; then
     else
         fail "libexample_i2c.a not found"
     fi
+elif [[ -z "$NM" ]]; then
+    skip "riscv32-esp-elf-nm not found"
 else
     skip "ulp_main.elf not found"
 fi
@@ -308,10 +314,11 @@ echo ""
 echo "=== Test 7: Single project mode ==="
 # ===========================================================================
 
-# Rewrite platformio.ini for single project
-cat > "$PROJECT_DIR/platformio.ini" << 'EOF'
+# Rewrite platformio.ini for single project, preserving the platform line
+PLATFORM_LINE="$(grep '^platform' "$PROJECT_DIR/platformio.ini")"
+cat > "$PROJECT_DIR/platformio.ini" << EOF
 [env:esp32s3-idf]
-platform = espressif32@55.3.36
+$PLATFORM_LINE
 board = esp32-s3-devkitc-1
 framework = espidf
 

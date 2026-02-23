@@ -1,2 +1,3 @@
 .pio/
-sdkconfig.esp32s3-idf
+.pio-ci/
+examples/

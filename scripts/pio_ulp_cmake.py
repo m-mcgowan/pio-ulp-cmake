@@ -405,6 +405,20 @@ def build_ulp_project(
     ulp_binary_env = ulp_env.Clone()
     ulp_binary_env.Decider("timestamp-newer")
 
+    def _build_and_reprefix(env, target, source):
+        """Run cmake build, then rewrite .h/.ld if prefix != 'ulp_'."""
+        result = exec_command(list(build_cmd))
+        if result["returncode"] != 0:
+            sys.stderr.write(result["err"] + "\n")
+            env.Exit(1)
+
+        if prefix != "ulp_":
+            for ext in (".h", ".ld"):
+                path = Path(ulp_build_dir) / ("%s%s" % (app_name, ext))
+                if path.exists():
+                    text = path.read_text()
+                    path.write_text(text.replace("ulp_", prefix))
+
     build_target = ulp_binary_env.Command(
         [
             str(Path(ulp_build_dir) / ("%s.h" % app_name)),
@@ -413,7 +427,7 @@ def build_ulp_project(
         ],
         None,
         ulp_binary_env.VerboseAction(
-            " ".join(build_cmd),
+            _build_and_reprefix,
             "Generating ULP project files for %s" % app_name,
         ),
     )
@@ -508,35 +522,24 @@ def _standalone_main(env):
     # This mirrors what the stock ulp.py's prepare_ulp_env_vars() does.
     platform = env.PioPlatform()
     framework_dir = platform.get_package_dir("framework-espidf")
-    idf_variant = env.BoardConfig().get("build.mcu", "esp32s3")
 
     sdk_config = _get_sdk_config(
         env.subst("$PROJECT_DIR"), env.subst("$BUILD_DIR"),
         env.subst("$PIOENV")
     )
 
-    is_fsm = sdk_config.get("CONFIG_ULP_COPROC_TYPE_FSM", "") == "y"
-    is_xtensa = idf_variant in ("esp32", "esp32s2", "esp32s3")
-
-    # Main-CPU toolchain (needed by cmake for some include resolution)
-    main_toolchain = platform.get_package_dir(
-        "toolchain-xtensa-esp-elf" if is_xtensa else "toolchain-riscv32-esp"
-    )
-    # FSM ULP assembler toolchain
-    fsm_toolchain = platform.get_package_dir("toolchain-esp32ulp") if is_fsm else None
+    # LoadPioPlatform() adds toolchain bin/ dirs to the SCons env PATH,
+    # but exec_command() uses os.environ. Sync the SCons PATH into
+    # os.environ so cmake subprocesses find the correct compilers.
+    scons_path = env["ENV"].get("PATH", "")
+    if scons_path:
+        os.environ["PATH"] = scons_path
 
     ninja_dir = platform.get_package_dir("tool-ninja")
     cmake_dir = platform.get_package_dir("tool-cmake")
-    additional_packages = [
-        main_toolchain,
-        fsm_toolchain,
-        ninja_dir,
-        str(Path(cmake_dir) / "bin") if cmake_dir else None,
-    ]
-
-    for package in additional_packages:
-        if package and os.path.isdir(package):
-            env.PrependENVPath("PATH", package)
+    for d in [ninja_dir, str(Path(cmake_dir) / "bin") if cmake_dir else None]:
+        if d and os.path.isdir(d):
+            os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
 
     ulp_env = env.Clone()
     ulp_env["__PIO_ULP_ORIG_ENV"] = env
@@ -589,6 +592,7 @@ def integrated_main(env, sdk_config, project_config, app_includes, idf_variant):
     platform = env.PioPlatform()
     framework_dir = platform.get_package_dir("framework-espidf")
     build_dir = env.subst("$BUILD_DIR")
+
     # Get component includes from the framework context
     def _get_comp_includes(target_config, app_name):
         for source in target_config.get("sources", []):
@@ -651,16 +655,17 @@ def integrated_main(env, sdk_config, project_config, app_includes, idf_variant):
 try:
     from SCons.Script import Import
 
-    Import("env")
+    Import("env")  # noqa: F821 — SCons Import() creates locals
 
     # Check if we're in ulp.py context (integrated) or extra_scripts (standalone)
     try:
         Import("sdk_config project_config app_includes idf_variant")
         # Integrated mode — called from ulp.py via SConscript
-        integrated_main(env, sdk_config, project_config, app_includes, idf_variant)
+        integrated_main(env, sdk_config, project_config,  # noqa: F821
+                        app_includes, idf_variant)  # noqa: F821
     except Exception:
         # Standalone mode — called as pre: extra_scripts
-        _standalone_main(env)
+        _standalone_main(env)  # noqa: F821
 
 except ImportError:
     # Not running in SCons context (e.g., imported for testing)
