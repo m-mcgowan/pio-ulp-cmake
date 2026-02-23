@@ -95,11 +95,9 @@ For each registered ULP project, it:
 This is the current way to use the tool with the stock pioarduino platform.
 No platform patches required.
 
-### 1. Add the script to your project
+### 1. Install via `lib_deps`
 
-Copy `scripts/pio_ulp_cmake.py` into your project (e.g. under `scripts/`).
-
-### 2. Configure `platformio.ini`
+Add pio-ulp-cmake as a library dependency and reference its script:
 
 ```ini
 [env:esp32s3-idf]
@@ -107,11 +105,27 @@ platform = espressif32
 board = esp32-s3-devkitc-1
 framework = espidf
 
-extra_scripts = pre:scripts/pio_ulp_cmake.py
+lib_deps =
+    https://github.com/m-mcgowan/pio-ulp-cmake.git
+
+extra_scripts =
+    pre:${PROJECT_LIBDEPS_DIR}/${PIOENV}/pio-ulp-cmake/scripts/pio_ulp_cmake.py
 
 board_build.ulp_projects =
     ulp_main:ulp
     ulp_sensor:ulp_sensor:sensor_
+```
+
+PlatformIO downloads pio-ulp-cmake into `.pio/libdeps/<env>/` and the
+`extra_scripts` path references it there. The library itself has no
+compilable sources — it only provides the build script.
+
+**Alternative: copy the script manually.** If you prefer not to use
+`lib_deps`, copy `scripts/pio_ulp_cmake.py` into your project and
+reference it directly:
+
+```ini
+extra_scripts = pre:scripts/pio_ulp_cmake.py
 ```
 
 Each line under `board_build.ulp_projects` has the format:
@@ -126,7 +140,7 @@ name:dir[:prefix]
 | `dir`    | Directory containing `CMakeLists.txt`, relative to project root | `ulp` |
 | `prefix` | Symbol prefix for the generated header (default: `ulp_`) | `sensor_`  |
 
-### 3. Write your ULP CMakeLists.txt
+### 2. Write your ULP CMakeLists.txt
 
 Each ULP directory needs a standard IDF-compatible `CMakeLists.txt`. Minimal
 example:
@@ -162,7 +176,7 @@ target_include_directories(my_lib PUBLIC path/to/include)
 target_link_libraries(${ULP_APP_NAME} PRIVATE my_lib)
 ```
 
-### 4. Do NOT call `ulp_add_project()` in `src/CMakeLists.txt`
+### 3. Do NOT call `ulp_add_project()` in `src/CMakeLists.txt`
 
 When using `pio_ulp_cmake.py`, the tool handles all ULP building, assembly
 embedding, and linker script addition. If your `src/CMakeLists.txt` also
@@ -177,7 +191,7 @@ idf_component_register(SRCS ${app_sources})
 # ulp_add_project("ulp_main" "${CMAKE_SOURCE_DIR}/ulp")
 ```
 
-### 5. Reference ULP symbols in firmware code
+### 4. Reference ULP symbols in firmware code
 
 ```cpp
 #include "ulp_main.h"    // Generated header with ulp_ prefixed symbols
@@ -198,7 +212,7 @@ void app_main(void) {
 }
 ```
 
-### 6. Enable ULP in sdkconfig
+### 5. Enable ULP in sdkconfig
 
 Create `sdkconfig.<env>` (where `<env>` matches your `[env:name]` in
 platformio.ini):
@@ -371,7 +385,7 @@ Each example project follows standard PIO layout:
 
 ```
 examples/ulp_riscv_gpio/
-├── platformio.ini                 # References ../../scripts/pio_ulp_cmake.py
+├── platformio.ini                 # Uses lib_deps or references ../../scripts/
 ├── sdkconfig.esp32s3-riscv-gpio   # ULP coprocessor settings
 ├── src/
 │   └── ulp_riscv_example_main.c   # Verbatim from ESP-IDF
