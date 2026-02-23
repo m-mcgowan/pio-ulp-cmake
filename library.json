@@ -1,0 +1,16 @@
+{
+  "name": "pio-ulp-cmake",
+  "version": "0.1.0",
+  "description": "CMake-based ULP build support for PlatformIO",
+  "keywords": ["ulp", "cmake", "esp32", "risc-v", "lp-core", "build"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/m-mcgowan/pio-ulp-cmake.git"
+  },
+  "frameworks": "*",
+  "platforms": "*",
+  "build": {
+    "libArchive": false
+  }
+}
