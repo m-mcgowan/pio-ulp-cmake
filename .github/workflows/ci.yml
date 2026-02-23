@@ -9,9 +9,6 @@ on:
   pull_request:
     branches: [main]
 
-env:
-  PLATFORMIO_PLATFORM_VERSION: "55.3.36"
-
 jobs:
   lint:
     name: Lint
@@ -36,9 +33,15 @@ jobs:
           severity: warning
 
   test-fixture:
-    name: Test (multi-project fixture)
+    name: "Test fixture (${{ matrix.platform_version }})"
     runs-on: ubuntu-latest
     needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        platform_version:
+          - "55.3.37"   # IDF 5.5.2
+          - "54.3.21-2" # IDF 5.4.2
     steps:
       - uses: actions/checkout@v4
 
@@ -52,25 +55,33 @@ jobs:
           path: |
             ~/.platformio/packages
             ~/.platformio/platforms
-          key: pio-${{ runner.os }}-${{ env.PLATFORMIO_PLATFORM_VERSION }}-fixture
+          key: pio-${{ runner.os }}-${{ matrix.platform_version }}-fixture
           restore-keys: |
-            pio-${{ runner.os }}-${{ env.PLATFORMIO_PLATFORM_VERSION }}-
+            pio-${{ runner.os }}-${{ matrix.platform_version }}-
 
       - name: Install PlatformIO
         run: |
           pip install platformio
-          pio pkg install -g -p "espressif32@${{ env.PLATFORMIO_PLATFORM_VERSION }}"
+          pio pkg install -g -p "espressif32@${{ matrix.platform_version }}"
+
+      - name: Override platform version
+        run: |
+          sed -i "s/espressif32@[^ ]*/espressif32@${{ matrix.platform_version }}/" \
+            tests/fixture/platformio.ini
 
       - name: Run integration tests
         run: ./tests/test_ulp_cmake.sh -v
 
   build-examples:
-    name: "Build: ${{ matrix.example }}"
+    name: "Build: ${{ matrix.example }} (${{ matrix.platform_version }})"
     runs-on: ubuntu-latest
     needs: lint
     strategy:
       fail-fast: false
       matrix:
+        platform_version:
+          - "55.3.37"   # IDF 5.5.2
+          - "54.3.21-2" # IDF 5.4.2
         example:
           - ulp_fsm
           - ulp_riscv_gpio
@@ -92,17 +103,22 @@ jobs:
           path: |
             ~/.platformio/packages
             ~/.platformio/platforms
-          key: pio-${{ runner.os }}-${{ env.PLATFORMIO_PLATFORM_VERSION }}-${{ matrix.example }}
+          key: pio-${{ runner.os }}-${{ matrix.platform_version }}-${{ matrix.example }}
           restore-keys: |
-            pio-${{ runner.os }}-${{ env.PLATFORMIO_PLATFORM_VERSION }}-
+            pio-${{ runner.os }}-${{ matrix.platform_version }}-
 
       - name: Install PlatformIO
         run: |
           pip install platformio
-          pio pkg install -g -p "espressif32@${{ env.PLATFORMIO_PLATFORM_VERSION }}"
+          pio pkg install -g -p "espressif32@${{ matrix.platform_version }}"
 
       - name: Sync example from framework
         run: ./scripts/sync_examples.sh
+
+      - name: Override platform version
+        run: |
+          sed -i "s/espressif32@[^ ]*/espressif32@${{ matrix.platform_version }}/" \
+            examples/${{ matrix.example }}/platformio.ini
 
       - name: Build example
         run: cd examples/${{ matrix.example }} && pio run
