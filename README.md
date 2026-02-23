@@ -1,11 +1,15 @@
 # pio_ulp_cmake — Full CMake ULP Builds for PlatformIO
 
+[![CI](https://github.com/m-mcgowan/pio-ulp-cmake/actions/workflows/ci.yml/badge.svg)](https://github.com/m-mcgowan/pio-ulp-cmake/actions/workflows/ci.yml)
+
 ## Why this exists
 
 PlatformIO's built-in ULP builder (`ulp.py` in the
 [pioarduino platform](https://github.com/pioarduino/platform-espressif32))
 does not use your project's CMakeLists.txt. It bypasses CMake's project model
 entirely, which means several standard ESP-IDF build features don't work.
+This was [reported upstream](https://github.com/platformio/platform-espressif32/issues/940)
+and closed as "by design."
 
 ### What the stock builder does
 
@@ -176,22 +180,13 @@ target_include_directories(my_lib PUBLIC path/to/include)
 target_link_libraries(${ULP_APP_NAME} PRIVATE my_lib)
 ```
 
-### 3. Do NOT call `ulp_add_project()` in `src/CMakeLists.txt`
+The `extra_scripts` and `board_build.ulp_projects` settings replace the
+`ulp_add_project()` call that would normally go in `src/CMakeLists.txt` in a
+native IDF project. The tool invokes the same IDF cmake infrastructure
+(`IDFULPProject.cmake`) internally — it just drives it from PlatformIO's
+SCons build instead of from the host-side CMake.
 
-When using `pio_ulp_cmake.py`, the tool handles all ULP building, assembly
-embedding, and linker script addition. If your `src/CMakeLists.txt` also
-calls `ulp_add_project()`, you'll get duplicate symbol errors.
-
-```cmake
-# src/CMakeLists.txt
-FILE(GLOB_RECURSE app_sources ${CMAKE_SOURCE_DIR}/src/*.*)
-idf_component_register(SRCS ${app_sources})
-
-# Do NOT uncomment when using pio_ulp_cmake.py:
-# ulp_add_project("ulp_main" "${CMAKE_SOURCE_DIR}/ulp")
-```
-
-### 4. Reference ULP symbols in firmware code
+### 3. Reference ULP symbols in firmware code
 
 ```cpp
 #include "ulp_main.h"    // Generated header with ulp_ prefixed symbols
@@ -212,16 +207,19 @@ void app_main(void) {
 }
 ```
 
-### 5. Enable ULP in sdkconfig
+### 4. Enable ULP in sdkconfig
 
-Create `sdkconfig.<env>` (where `<env>` matches your `[env:name]` in
-platformio.ini):
+Add the ULP coprocessor settings to `sdkconfig.defaults` so only the
+incremental changes from the IDF defaults need to be specified:
 
 ```
 CONFIG_ULP_COPROC_ENABLED=y
 CONFIG_ULP_COPROC_TYPE_RISCV=y
 CONFIG_ULP_COPROC_RESERVE_MEM=4096
 ```
+
+The tool reads `sdkconfig.defaults` first, then overlays
+`sdkconfig.<env>` if present.
 
 ## Design principle
 
@@ -318,14 +316,27 @@ board_build.ulp_projects =
 
 ## Compatibility validation
 
-The `examples/` directory proves that `pio_ulp_cmake.py` compiles
-**unmodified ESP-IDF ULP examples**. Every `.c`, `.S`, and `.h` file is
-byte-for-byte identical to the original in the `framework-espidf` package.
+CI proves that `pio_ulp_cmake.py` compiles **unmodified ESP-IDF ULP
+examples** across multiple pioarduino releases. Every `.c`, `.S`, and `.h`
+file is byte-for-byte identical to the original in the `framework-espidf`
+package.
 
-`scripts/sync_examples.sh` copies sources from the installed framework into
-PlatformIO's project layout. Each example becomes a self-contained PIO
-project with its own `platformio.ini` and `sdkconfig.<env>`. No source files
-are patched.
+### Tested platforms
+
+| pioarduino version | ESP-IDF version | Status |
+|--------------------|-----------------|--------|
+| `55.03.37`         | 5.5.2           | Tested in CI |
+| `54.03.21-2`       | 5.4.2           | Tested in CI |
+
+CI runs on every push to `main` and weekly (Monday 6am UTC) to catch
+upstream breakage.
+
+### Example coverage
+
+Examples are generated on demand by `scripts/sync_examples.sh` from the
+installed `framework-espidf` — they are not committed to git. Each becomes a
+self-contained PIO project with its own `platformio.ini` and
+`sdkconfig.defaults`. No source files are patched.
 
 | Example | Coprocessor | Board | What it validates |
 |---------|------------|-------|-------------------|
@@ -336,17 +347,6 @@ are patched.
 | `lp_core_build_system` | LP Core | ESP32-C6 | Custom CMakeLists.txt + static library |
 | `lp_core_interrupt` | LP Core | ESP32-C6 | Alternative app name (`lp_core_main`) |
 | `lp_core_uart_print` | LP Core | ESP32-C6 | LP UART with different source nesting |
-
-```bash
-# Sync examples from installed framework-espidf
-./scripts/sync_examples.sh
-
-# Build all examples
-for d in examples/*/; do (cd "$d" && pio run); done
-
-# Or build one
-cd examples/lp_core_build_system && pio run
-```
 
 The only layout adaptations (handled by the sync script, not by modifying
 sources):
@@ -362,35 +362,18 @@ sources):
 pio-ulp-cmake/
 ├── scripts/
 │   ├── pio_ulp_cmake.py           # The build tool
-│   └── sync_examples.sh           # Syncs ESP-IDF examples into examples/
-├── examples/                      # Verbatim ESP-IDF examples as PIO projects
-│   ├── ulp_fsm/                   # FSM assembly (ESP32)
-│   ├── ulp_riscv_gpio/            # RISC-V GPIO (ESP32-S3)
-│   ├── ulp_riscv_i2c/             # RISC-V I2C (ESP32-S3)
-│   ├── lp_core_gpio/              # LP Core GPIO (ESP32-C6)
-│   ├── lp_core_build_system/      # LP Core + custom CMake (ESP32-C6)
-│   ├── lp_core_interrupt/         # LP Core interrupt (ESP32-C6)
-│   └── lp_core_uart_print/        # LP Core UART (ESP32-C6)
+│   ├── sync_examples.sh           # Generates examples/ from framework-espidf
+│   └── ci.sh                      # Local CI runner (builds all examples)
+├── examples/                      # Generated on demand (gitignored)
 └── tests/
     ├── test_ulp_cmake.sh          # Integration tests
     └── fixture/                   # Multi-project test harness
         ├── platformio.ini
+        ├── sdkconfig.defaults     # RISC-V ULP config
         ├── src/main.cpp
         ├── ulp/                   # First ULP project (with subdirectory lib)
         ├── ulp_sensor/            # Second ULP project (sensor_ prefix)
         └── libs/                  # External libraries linked into ULP
-```
-
-Each example project follows standard PIO layout:
-
-```
-examples/ulp_riscv_gpio/
-├── platformio.ini                 # Uses lib_deps or references ../../scripts/
-├── sdkconfig.esp32s3-riscv-gpio   # ULP coprocessor settings
-├── src/
-│   └── ulp_riscv_example_main.c   # Verbatim from ESP-IDF
-└── ulp/
-    └── main.c                     # Verbatim from ESP-IDF
 ```
 
 ## Running tests
@@ -399,6 +382,12 @@ examples/ulp_riscv_gpio/
 # Integration tests (multi-project builds, symbol prefixes, external libs)
 ./tests/test_ulp_cmake.sh       # run all tests
 ./tests/test_ulp_cmake.sh -v    # verbose — show build output on failure
+
+# Local CI — sync examples from framework and build all of them
+./scripts/ci.sh                           # all examples, latest platform
+./scripts/ci.sh 54.03.21-2               # all examples, IDF 5.4.2
+./scripts/ci.sh 55.03.37 ulp_riscv_gpio  # one example, specific version
+./scripts/ci.sh --list                    # list available examples
 ```
 
 The test suite does real PlatformIO builds (clean + incremental) and verifies
@@ -406,5 +395,5 @@ artifacts, symbols, prefix namespacing, external library linking, dependency
 tracking, and single vs multi-project modes. See the test file header for
 detailed descriptions of each test.
 
-Requires PlatformIO with the `espressif32` platform and RISC-V/Xtensa
-toolchains installed.
+Requires PlatformIO with the pioarduino `espressif32` platform and
+RISC-V/Xtensa toolchains installed.
