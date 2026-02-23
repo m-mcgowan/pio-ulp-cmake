@@ -37,8 +37,32 @@ __version__ = "0.1.0"
 import json
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
+
+
+def _find_tool(platform, package_name, binary_name):
+    """Find a build tool from PIO packages or system PATH.
+
+    Tries the PIO package first (e.g. tool-cmake, tool-ninja).
+    Falls back to the system PATH if the package isn't installed
+    (common on platforms where PIO doesn't ship the tool).
+    """
+    pkg_dir = platform.get_package_dir(package_name)
+    if pkg_dir:
+        candidate = str(Path(pkg_dir) / "bin" / binary_name)
+        if os.path.isfile(candidate):
+            return candidate
+    # Fall back to system PATH
+    system_path = shutil.which(binary_name)
+    if system_path:
+        return system_path
+    raise RuntimeError(
+        "Could not find '%s': neither PIO package '%s' nor system PATH "
+        "provide it. Install %s or the PIO package."
+        % (binary_name, package_name, binary_name)
+    )
 
 
 def parse_ulp_projects(env):
@@ -305,7 +329,7 @@ def build_ulp_project(
         comp_includes_str = ";".join(resolved_includes)
 
         cmd = [
-            str(Path(platform.get_package_dir("tool-cmake")) / "bin" / "cmake"),
+            _find_tool(platform, "tool-cmake", "cmake"),
             "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
             "-DCMAKE_GENERATOR=Ninja",
             "-DCMAKE_TOOLCHAIN_FILE=" + toolchain_file,
@@ -371,7 +395,7 @@ def build_ulp_project(
     # --- Build step ---
 
     build_cmd = (
-        str(Path(platform.get_package_dir("tool-cmake")) / "bin" / "cmake"),
+        _find_tool(platform, "tool-cmake", "cmake"),
         "--build",
         ulp_build_dir,
         "--target",
@@ -397,7 +421,7 @@ def build_ulp_project(
     # --- Assembly embedding step ---
 
     asm_cmd = (
-        str(Path(platform.get_package_dir("tool-cmake")) / "bin" / "cmake"),
+        _find_tool(platform, "tool-cmake", "cmake"),
         "-DDATA_FILE=$SOURCE",
         "-DSOURCE_FILE=$TARGET",
         "-DFILE_TYPE=BINARY",
@@ -501,11 +525,13 @@ def _standalone_main(env):
     # FSM ULP assembler toolchain
     fsm_toolchain = platform.get_package_dir("toolchain-esp32ulp") if is_fsm else None
 
+    ninja_dir = platform.get_package_dir("tool-ninja")
+    cmake_dir = platform.get_package_dir("tool-cmake")
     additional_packages = [
         main_toolchain,
         fsm_toolchain,
-        platform.get_package_dir("tool-ninja"),
-        str(Path(platform.get_package_dir("tool-cmake")) / "bin"),
+        ninja_dir,
+        str(Path(cmake_dir) / "bin") if cmake_dir else None,
     ]
 
     for package in additional_packages:
