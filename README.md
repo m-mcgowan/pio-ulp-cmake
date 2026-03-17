@@ -188,14 +188,16 @@ builder (`espidf.py`):
 
 ### Tested platforms
 
-CI tests every push against both stock and pioarduino platforms, each in an
-isolated `PLATFORMIO_CORE_DIR`.
+Backward compatible across ESP-IDF 5.2–5.5. CI tests every push against
+stock and pioarduino platforms, each in an isolated `PLATFORMIO_CORE_DIR`.
 
 | Platform | Version | ESP-IDF | Status |
 |----------|---------|---------|--------|
 | pioarduino | `55.03.37` | 5.5.2 | Tested in CI |
 | pioarduino | `54.03.21-2` | 5.4.2 | Tested in CI |
-| stock espressif32 | `6.13.0` | 5.3.2 | Tested in CI |
+| stock espressif32 | `6.13.0` | 5.5.3 | Tested in CI |
+| stock espressif32 | `6.12.0` | 5.5.0 | Tested in CI |
+| stock espressif32 | `6.6.0` | 5.2.1 | Tested in CI |
 
 ### IDF example coverage
 
