@@ -54,9 +54,9 @@ jobs:
           - platform_version: "stock-6.12.0"
             platform_spec: "espressif32@6.12.0"
             platform_label: "stock espressif32 6.12.0"
-          - platform_version: "stock-6.6.0"
-            platform_spec: "espressif32@6.6.0"
-            platform_label: "stock espressif32 6.6.0"
+          - platform_version: "stock-6.10.0"
+            platform_spec: "espressif32@6.10.0"
+            platform_label: "stock espressif32 6.10.0"
     env:
       PLATFORMIO_CORE_DIR: /home/runner/pio-${{ matrix.platform_version }}
     steps:
@@ -107,10 +107,10 @@ jobs:
           - platform_version: "stock-6.12.0"
             platform_spec: "espressif32@6.12.0"
             platform_label: "stock espressif32 6.12.0"
-            experimental: true
-          - platform_version: "stock-6.6.0"
-            platform_spec: "espressif32@6.6.0"
-            platform_label: "stock espressif32 6.6.0"
+            experimental: false
+          - platform_version: "stock-6.10.0"
+            platform_spec: "espressif32@6.10.0"
+            platform_label: "stock espressif32 6.10.0"
             experimental: true
     env:
       PLATFORMIO_CORE_DIR: /home/runner/pio-${{ matrix.platform_version }}
@@ -159,10 +159,10 @@ jobs:
           - platform_version: "stock-6.12.0"
             platform_spec: "espressif32@6.12.0"
             platform_label: "stock espressif32 6.12.0"
-            experimental: true
-          - platform_version: "stock-6.6.0"
-            platform_spec: "espressif32@6.6.0"
-            platform_label: "stock espressif32 6.6.0"
+            experimental: false
+          - platform_version: "stock-6.10.0"
+            platform_spec: "espressif32@6.10.0"
+            platform_label: "stock espressif32 6.10.0"
             experimental: true
     env:
       PLATFORMIO_CORE_DIR: /home/runner/pio-${{ matrix.platform_version }}

@@ -23,6 +23,8 @@ both `espressif32` and `pioarduino` platforms.
   examples with no source changes, only a PlatformIO directory layout
 - **espressif32 and pioarduino** — tested in CI against both
 
+**Requires ESP-IDF >= 5.4** (stock espressif32 >= 6.10.0, pioarduino >= 54.x).
+
 ## Quick start
 
 **1. Add to your project**
@@ -188,8 +190,9 @@ builder (`espidf.py`):
 
 ### Tested platforms
 
-Backward compatible across ESP-IDF 5.2–5.5. CI tests every push against
-stock and pioarduino platforms, each in an isolated `PLATFORMIO_CORE_DIR`.
+Backward compatible across ESP-IDF 5.4–5.5 (requires `IDFULPProject.cmake`,
+introduced in ESP-IDF 5.4). CI tests every push against stock and pioarduino
+platforms, each in an isolated `PLATFORMIO_CORE_DIR`.
 
 | Platform | Version | ESP-IDF | Status |
 |----------|---------|---------|--------|
@@ -197,7 +200,7 @@ stock and pioarduino platforms, each in an isolated `PLATFORMIO_CORE_DIR`.
 | pioarduino | `54.03.21-2` | 5.4.2 | Tested in CI |
 | stock espressif32 | `6.13.0` | 5.5.3 | Tested in CI |
 | stock espressif32 | `6.12.0` | 5.5.0 | Tested in CI |
-| stock espressif32 | `6.6.0` | 5.2.1 | Tested in CI |
+| stock espressif32 | `6.10.0` | 5.4.0 | Tested in CI |
 
 ### IDF example coverage
 
