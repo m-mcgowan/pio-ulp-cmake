@@ -1,3 +1,6 @@
 .pio/
 .pio-ci/
 examples/
+sdkconfig.esp32s3-idf
+sdkconfig.esp32s3-test
+tests/fixture/test/__pycache__
