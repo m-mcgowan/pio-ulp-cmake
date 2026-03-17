@@ -2,10 +2,15 @@
 # SPDX-FileCopyrightText: 2026 Mat McGowan
 # SPDX-License-Identifier: MIT
 #
-# Patch a pioarduino platform-espressif32 installation to use pio_ulp_cmake.
+# EXPERIMENTAL / NOT USED
 #
-# This emulates what a merged PR would look like: ulp.py detects custom
-# CMakeLists.txt or board_build.ulp_projects and delegates to pio_ulp_cmake's
+# Early experiment to patch pioarduino's ulp.py for integrated mode.
+# Superseded by the extra_scripts standalone approach, which works on
+# both stock espressif32 and pioarduino without platform modifications.
+#
+# Kept for reference — patches a pioarduino platform-espressif32
+# installation so ulp.py detects custom CMakeLists.txt or
+# board_build.ulp_projects and delegates to pio_ulp_cmake's
 # integrated_main(), falling back to stock behavior otherwise.
 #
 # Usage:

@@ -53,7 +53,7 @@ jobs:
       #
       # - pioarduino PR: automatically open a PR against
       #   pioarduino/platform-espressif32 to integrate the latest version.
-      #   Use scripts/patch_pioarduino.sh as the basis for the PR diff.
+      #   See scripts/patch_pioarduino_notused.sh for an earlier experiment.
       # ---------------------------------------------------------------
 
       - name: Log deployment
