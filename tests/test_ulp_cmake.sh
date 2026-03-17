@@ -4,8 +4,9 @@
 #
 # Integration tests for pio_ulp_cmake.py
 #
-# End-to-end tests that run real PlatformIO builds against the ulp_build_rework
-# test project (ESP32-S3, RISC-V ULP, stock pioarduino platform).
+# End-to-end tests that run real PlatformIO builds against the test fixture
+# project (ESP32-S3, RISC-V ULP). The caller specifies which platform to test
+# via -p and controls build isolation via PLATFORMIO_CORE_DIR.
 #
 # Test 1 — Clean multi-project build
 #   Wipes all build artifacts and rebuilds from scratch with two ULP projects
@@ -58,16 +59,26 @@
 #   Confirms that the tool only builds explicitly registered projects.
 #
 # Usage:
-#   ./tests/test_ulp_cmake.sh          # run all tests
-#   ./tests/test_ulp_cmake.sh -v       # verbose (show build output on failure)
+#   ./tests/test_ulp_cmake.sh -p <platform_spec>       # test a specific platform
+#   ./tests/test_ulp_cmake.sh -p <platform_spec> -v    # verbose output on failure
 #
-# Requires: pio, riscv32-esp-elf-nm (from PlatformIO toolchains)
+# Examples:
+#   # pioarduino (isolated core dir)
+#   PLATFORMIO_CORE_DIR=/tmp/pio-pioarduino \
+#     ./tests/test_ulp_cmake.sh -p 'https://github.com/pioarduino/platform-espressif32/releases/download/55.03.37/platform-espressif32.zip'
+#
+#   # stock espressif32 (isolated core dir)
+#   PLATFORMIO_CORE_DIR=/tmp/pio-stock \
+#     ./tests/test_ulp_cmake.sh -p 'espressif32@6.13.0'
+#
+# Requires: pio (installed), riscv32-esp-elf-nm (auto-installed by PlatformIO)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR/fixture"
-BUILD_DIR="$PROJECT_DIR/.pio/build/esp32s3-idf"
+ENV_NAME="esp32s3-idf"
+BUILD_DIR="$PROJECT_DIR/.pio/build/$ENV_NAME"
 ULP_BUILD_DIR="$BUILD_DIR/ulp"
 
 # Toolchain nm — resolved after first build installs toolchains
@@ -75,14 +86,39 @@ NM=""
 XTENSA_NM=""
 
 find_toolchain_nm() {
+    local pio_dir="${PLATFORMIO_CORE_DIR:-$HOME/.platformio}"
     if [[ -z "$NM" ]]; then
-        NM="$(find "$HOME/.platformio/packages/toolchain-riscv32-esp" -name 'riscv32-esp-elf-nm' -type f 2>/dev/null | head -1 || true)"
-        XTENSA_NM="$(find "$HOME/.platformio/packages/toolchain-xtensa-esp-elf" -name 'xtensa-esp-elf-nm' -type f 2>/dev/null | head -1 || true)"
+        NM="$(find "$pio_dir/packages/toolchain-riscv32-esp" -name 'riscv32-esp-elf-nm' -type f 2>/dev/null | head -1 || true)"
+        XTENSA_NM="$(find "$pio_dir/packages/toolchain-xtensa-esp-elf" -name 'xtensa-esp-elf-nm' -type f 2>/dev/null | head -1 || true)"
     fi
 }
 
+# --- Parse arguments ---
 VERBOSE=0
-[[ "${1:-}" == "-v" ]] && VERBOSE=1
+PLATFORM_SPEC=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -v) VERBOSE=1; shift ;;
+        -p) PLATFORM_SPEC="$2"; shift 2 ;;
+        *)  echo "Unknown option: $1" >&2; exit 1 ;;
+    esac
+done
+
+if [[ -z "$PLATFORM_SPEC" ]]; then
+    echo "Error: -p <platform_spec> is required" >&2
+    echo "" >&2
+    echo "Examples:" >&2
+    echo "  $0 -p 'https://github.com/pioarduino/platform-espressif32/releases/download/55.03.37/platform-espressif32.zip'" >&2
+    echo "  $0 -p 'espressif32@6.13.0'" >&2
+    exit 1
+fi
+
+echo "Platform: $PLATFORM_SPEC"
+if [[ -n "${PLATFORMIO_CORE_DIR:-}" ]]; then
+    echo "Core dir: $PLATFORMIO_CORE_DIR"
+fi
+echo ""
 
 PASS=0
 FAIL=0
@@ -100,7 +136,8 @@ skip() { SKIP=$((SKIP + 1)); echo -e "  ${YELLOW}SKIP${NC}: $1"; }
 
 run_build() {
     local log="$PROJECT_DIR/.pio/test_build.log"
-    if pio run -d "$PROJECT_DIR" -e esp32s3-idf > "$log" 2>&1; then
+    mkdir -p "$PROJECT_DIR/.pio"
+    if pio run -d "$PROJECT_DIR" -e "$ENV_NAME" > "$log" 2>&1; then
         return 0
     else
         if [[ $VERBOSE -eq 1 ]]; then
@@ -114,7 +151,8 @@ run_build() {
     fi
 }
 
-# Save originals so we can restore them
+# Save original platformio.ini and main.cpp; restore on exit.
+# The -p flag overrides the platform line for the test run.
 ORIG_INI="$(cat "$PROJECT_DIR/platformio.ini")"
 ORIG_SRC_DIR="$PROJECT_DIR/src"
 ORIG_MAIN="$(cat "$ORIG_SRC_DIR/main.cpp")"
@@ -124,17 +162,18 @@ restore_originals() {
 }
 trap restore_originals EXIT
 
+# Override the platform line in platformio.ini
+sed -i.bak "s|^platform = .*|platform = $PLATFORM_SPEC|" "$PROJECT_DIR/platformio.ini"
+rm -f "$PROJECT_DIR/platformio.ini.bak"
+
 
 # ===========================================================================
 echo ""
 echo "=== Test 1: Clean build with two ULP projects ==="
 # ===========================================================================
 
-# Ensure multi-project config
-restore_originals
-
 # Clean
-pio run -d "$PROJECT_DIR" -e esp32s3-idf -t clean > /dev/null 2>&1 || true
+pio run -d "$PROJECT_DIR" -e "$ENV_NAME" -t clean > /dev/null 2>&1 || true
 rm -rf "$ULP_BUILD_DIR"
 
 if run_build; then
@@ -293,7 +332,7 @@ if [[ -f "$TOUCH_FILE" ]]; then
     touch "$TOUCH_FILE"
 
     LOG="$PROJECT_DIR/.pio/test_build.log"
-    if pio run -d "$PROJECT_DIR" -e esp32s3-idf > "$LOG" 2>&1; then
+    if pio run -d "$PROJECT_DIR" -e "$ENV_NAME" > "$LOG" 2>&1; then
         # Should NOT be a full rebuild (should skip ulp_sensor entirely)
         if grep -q "ulp_main" "$LOG" && ! grep -q "Generating ULP configuration for ulp_sensor" "$LOG"; then
             pass "Incremental rebuild only touches affected project"
@@ -315,10 +354,9 @@ echo "=== Test 7: Single project mode ==="
 # ===========================================================================
 
 # Rewrite platformio.ini for single project, preserving the platform line
-PLATFORM_LINE="$(grep '^platform' "$PROJECT_DIR/platformio.ini")"
 cat > "$PROJECT_DIR/platformio.ini" << EOF
-[env:esp32s3-idf]
-$PLATFORM_LINE
+[env:$ENV_NAME]
+platform = $PLATFORM_SPEC
 board = esp32-s3-devkitc-1
 framework = espidf
 
@@ -358,7 +396,7 @@ extern "C" void app_main(void) {
 CPPEOF
 
 # Clean and rebuild
-pio run -d "$PROJECT_DIR" -e esp32s3-idf -t clean > /dev/null 2>&1 || true
+pio run -d "$PROJECT_DIR" -e "$ENV_NAME" -t clean > /dev/null 2>&1 || true
 rm -rf "$ULP_BUILD_DIR"
 
 if run_build; then

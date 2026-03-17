@@ -1,6 +1,57 @@
-# pio_ulp_cmake — Full CMake ULP Builds for PlatformIO
+# pio-ulp-cmake — Full CMake ULP Builds for PlatformIO espressif32 Projects
 
 [![CI](https://github.com/m-mcgowan/pio-ulp-cmake/actions/workflows/ci.yml/badge.svg)](https://github.com/m-mcgowan/pio-ulp-cmake/actions/workflows/ci.yml)
+
+Use standard ESP-IDF CMakeLists.txt files for ULP coprocessor builds in
+PlatformIO — with full support for libraries, subdirectories, multiple
+binaries, and custom symbol prefixes.
+
+## Features
+
+- **Native CMakeLists.txt** — write the same `CMakeLists.txt` you'd use in
+  a plain ESP-IDF project. `add_library()`, `add_subdirectory()`,
+  `target_link_libraries()`, `target_compile_definitions()`, and
+  `target_include_directories()` all work.
+- **Multiple ULP binaries** — build several ULP programs in one firmware,
+  each with its own name and symbol prefix to avoid collisions.
+- **External library linking** — link static C libraries into ULP code via
+  `add_library()` + `target_link_libraries()`, or organize code with
+  `add_subdirectory()`.
+- **All coprocessor types** — ULP RISC-V, LP Core, and FSM are supported
+  through the same IDF cmake infrastructure (`IDFULPProject.cmake`).
+- **Incremental rebuilds** — SCons dependency tracking via
+  `compile_commands.json` ensures only changed ULP sources trigger a rebuild.
+- **Works with stock and pioarduino platforms** — tested against both
+  `espressif32` (stock PlatformIO) and pioarduino releases.
+
+## Test fixture
+
+The project includes a multi-project test fixture at `tests/fixture/` that
+exercises the advanced features the IDF examples don't cover:
+
+```
+tests/fixture/
+├── platformio.ini          # Two ULP projects: ulp_main + ulp_sensor
+├── src/main.cpp            # Firmware that loads both ULP binaries
+├── ulp/                    # First ULP project (default ulp_ prefix)
+│   ├── CMakeLists.txt      #   Links external libs + subdirectory lib
+│   ├── main.c
+│   ├── ulp_app.c / .h
+│   └── lib/                #   Subdirectory library (add_subdirectory)
+│       ├── CMakeLists.txt
+│       └── ulp_helpers.c / .h
+├── ulp_sensor/             # Second ULP project (sensor_ prefix)
+│   ├── CMakeLists.txt
+│   └── sensor_main.c
+└── libs/                   # External libraries (add_library)
+    ├── example_i2c/
+    └── example_sensor/
+```
+
+The integration test suite (`tests/test_ulp_cmake.sh`) runs 7 tests against
+this fixture: clean build, artifact verification, symbol prefix namespacing,
+external library linking (ELF symbol inspection), firmware symbol linkage,
+incremental dependency tracking, and single vs multi-project mode.
 
 ## Why this exists
 
@@ -67,7 +118,7 @@ CMakeLists.txt — none of which work with PlatformIO's stock builder.
 
 `pio_ulp_cmake.py` brings that capability to PlatformIO.
 
-## What it does
+## How it works
 
 `pio_ulp_cmake.py` is a hybrid SCons/CMake build tool. It lets you write
 standard IDF-compatible `CMakeLists.txt` files for your ULP projects while
@@ -82,17 +133,47 @@ For each registered ULP project, it:
 4. Adds the generated header (`.h`) and linker script (`.ld`) to the main
    build so firmware code can reference ULP variables
 
-### What this enables
+### Design principle
 
-- **`add_library()` + `target_link_libraries()`** — link external C libraries
-  into ULP code without symlinks
-- **`add_subdirectory()`** — organize ULP code into subdirectories
-- **`target_compile_definitions()`** — per-target compile flags
-- **`target_include_directories()`** — per-target include paths
-- **Multiple ULP binaries** — each with its own prefix to avoid symbol
-  collisions
-- **SCons dependency tracking** — changes to ULP sources trigger incremental
-  rebuilds via `compile_commands.json`
+This project does **not** replicate or copy any part of ESP-IDF's ULP build
+logic. All coprocessor-specific behavior — include paths, platform defines,
+startup files, linker scripts, toolchain selection — is inferred from IDF's
+own CMake implementation (`IDFULPProject.cmake`). The same CMakeLists.txt
+works for ULP RISC-V, LP Core, and FSM without any coprocessor-specific
+hardcoding in the build tool or project templates.
+
+Similarly, toolchain PATH setup is delegated to PlatformIO's
+`LoadPioPlatform()`, which already adds all installed toolchain packages to
+`os.environ['PATH']`.
+
+### Internals
+
+The tool operates as a `pre:` extra_scripts, which means it executes before
+PlatformIO's framework builder (`espidf.py`). It:
+
+1. **Intercepts the stock ULP builder.** The stock `espidf.py` calls
+   `env.SConscript("ulp.py")` when it finds a `ulp/` directory. The tool
+   monkey-patches `env.SConscript` to skip that call, preventing the stock
+   builder from running.
+
+2. **Resolves component includes at build time.** ULP code needs IDF
+   component headers (`soc/*.h`, `hal/*.h`, etc.). The full resolved include
+   list is only available from the CMake API reply, which doesn't exist until
+   after the main cmake runs. The tool defers include resolution to the SCons
+   build action (not parse time), where it reads the API reply from
+   `.cmake/api/v1/reply/`. On the very first clean build, it falls back to
+   scanning the IDF `components/` directory.
+
+3. **Registers SCons dependencies from `compile_commands.json`.** After cmake
+   configure, the tool parses `compile_commands.json` to discover all source
+   files involved in the ULP build. These are registered as SCons
+   dependencies so that touching any ULP source triggers an incremental
+   rebuild.
+
+4. **Compiles and links assembly.** Each ULP binary gets converted to a
+   `.bin.S` assembly file (via IDF's `data_file_embed_asm.cmake`), compiled
+   to a `.o`, and added to the firmware link. Linker scripts are added via
+   `-T` flags.
 
 ## Usage (standalone mode)
 
@@ -221,48 +302,6 @@ CONFIG_ULP_COPROC_RESERVE_MEM=4096
 The tool reads `sdkconfig.defaults` first, then overlays
 `sdkconfig.<env>` if present.
 
-## Design principle
-
-This project does **not** replicate or copy any part of ESP-IDF's ULP build
-logic. All coprocessor-specific behavior — include paths, platform defines,
-startup files, linker scripts, toolchain selection — is inferred from IDF's
-own CMake implementation (`IDFULPProject.cmake`). The same CMakeLists.txt
-works for ULP RISC-V, LP Core, and FSM without any coprocessor-specific
-hardcoding in the build tool or project templates.
-
-Similarly, toolchain PATH setup is delegated to PlatformIO's
-`LoadPioPlatform()`, which already adds all installed toolchain packages to
-`os.environ['PATH']`.
-
-## How it works internally
-
-The tool operates as a `pre:` extra_scripts, which means it executes before
-PlatformIO's framework builder (`espidf.py`). It:
-
-1. **Intercepts the stock ULP builder.** The stock `espidf.py` calls
-   `env.SConscript("ulp.py")` when it finds a `ulp/` directory. The tool
-   monkey-patches `env.SConscript` to skip that call, preventing the stock
-   builder from running.
-
-2. **Resolves component includes at build time.** ULP code needs IDF
-   component headers (`soc/*.h`, `hal/*.h`, etc.). The full resolved include
-   list is only available from the CMake API reply, which doesn't exist until
-   after the main cmake runs. The tool defers include resolution to the SCons
-   build action (not parse time), where it reads the API reply from
-   `.cmake/api/v1/reply/`. On the very first clean build, it falls back to
-   scanning the IDF `components/` directory.
-
-3. **Registers SCons dependencies from `compile_commands.json`.** After cmake
-   configure, the tool parses `compile_commands.json` to discover all source
-   files involved in the ULP build. These are registered as SCons
-   dependencies so that touching any ULP source triggers an incremental
-   rebuild.
-
-4. **Compiles and links assembly.** Each ULP binary gets converted to a
-   `.bin.S` assembly file (via IDF's `data_file_embed_asm.cmake`), compiled
-   to a `.o`, and added to the firmware link. Linker scripts are added via
-   `-T` flags.
-
 ## Integrated mode (for platform package maintainers)
 
 If this tool is merged into the pioarduino platform package, it can be called
@@ -314,22 +353,18 @@ board_build.ulp_projects =
     ulp_sensor:ulp_sensor:sensor_
 ```
 
-## Compatibility validation
-
-CI proves that `pio_ulp_cmake.py` compiles **unmodified ESP-IDF ULP
-examples** across multiple pioarduino releases. Every `.c`, `.S`, and `.h`
-file is byte-for-byte identical to the original in the `framework-espidf`
-package.
+## Compatibility
 
 ### Tested platforms
 
-| pioarduino version | ESP-IDF version | Status |
-|--------------------|-----------------|--------|
-| `55.03.37`         | 5.5.2           | Tested in CI |
-| `54.03.21-2`       | 5.4.2           | Tested in CI |
+CI tests every push against both stock and pioarduino platforms, each in an
+isolated `PLATFORMIO_CORE_DIR` to verify clean builds from scratch.
 
-CI runs on every push to `main` and weekly (Monday 6am UTC) to catch
-upstream breakage.
+| Platform | Version | ESP-IDF | Status |
+|----------|---------|---------|--------|
+| pioarduino | `55.03.37` | 5.5.2 | Tested in CI |
+| pioarduino | `54.03.21-2` | 5.4.2 | Tested in CI |
+| stock espressif32 | `6.13.0` | 5.3.2 | Tested in CI |
 
 ### Example coverage
 
@@ -366,7 +401,7 @@ pio-ulp-cmake/
 │   └── ci.sh                      # Local CI runner (builds all examples)
 ├── examples/                      # Generated on demand (gitignored)
 └── tests/
-    ├── test_ulp_cmake.sh          # Integration tests
+    ├── test_ulp_cmake.sh          # Integration tests (7 tests)
     └── fixture/                   # Multi-project test harness
         ├── platformio.ini
         ├── sdkconfig.defaults     # RISC-V ULP config
@@ -379,9 +414,14 @@ pio-ulp-cmake/
 ## Running tests
 
 ```bash
-# Integration tests (multi-project builds, symbol prefixes, external libs)
-./tests/test_ulp_cmake.sh       # run all tests
-./tests/test_ulp_cmake.sh -v    # verbose — show build output on failure
+# Integration tests — specify the platform to test against
+# Set PLATFORMIO_CORE_DIR to isolate from your global PlatformIO installation
+PLATFORMIO_CORE_DIR=/tmp/pio-test \
+  ./tests/test_ulp_cmake.sh -v -p 'https://github.com/pioarduino/platform-espressif32/releases/download/55.03.37/platform-espressif32.zip'
+
+# Or test against stock espressif32
+PLATFORMIO_CORE_DIR=/tmp/pio-stock \
+  ./tests/test_ulp_cmake.sh -v -p 'espressif32@6.13.0'
 
 # Local CI — sync examples from framework and build all of them
 ./scripts/ci.sh                           # all examples, latest platform
@@ -392,8 +432,6 @@ pio-ulp-cmake/
 
 The test suite does real PlatformIO builds (clean + incremental) and verifies
 artifacts, symbols, prefix namespacing, external library linking, dependency
-tracking, and single vs multi-project modes. See the test file header for
-detailed descriptions of each test.
-
-Requires PlatformIO with the pioarduino `espressif32` platform and
-RISC-V/Xtensa toolchains installed.
+tracking, and single vs multi-project modes. Each test run uses the
+caller-specified platform and installs all dependencies automatically into the
+`PLATFORMIO_CORE_DIR`.

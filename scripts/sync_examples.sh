@@ -35,7 +35,7 @@ done
 
 # --- Auto-detect framework path ---
 if [[ -z "$FRAMEWORK_DIR" ]]; then
-    FRAMEWORK_DIR="$HOME/.platformio/packages/framework-espidf"
+    FRAMEWORK_DIR="${PLATFORMIO_CORE_DIR:-$HOME/.platformio}/packages/framework-espidf"
 fi
 
 if [[ ! -d "$FRAMEWORK_DIR/examples/system/ulp" ]]; then

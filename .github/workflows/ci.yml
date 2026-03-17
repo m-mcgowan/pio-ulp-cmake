@@ -36,16 +36,23 @@ jobs:
 
   # Install platform + framework once per version, then cache for downstream jobs
   setup:
-    name: "Setup (${{ matrix.platform_version }})"
+    name: "Setup (${{ matrix.platform_label }})"
     runs-on: ubuntu-latest
     needs: lint
     strategy:
       matrix:
-        platform_version:
-          - "55.03.37"   # IDF 5.5.2
-          - "54.03.21-2" # IDF 5.4.2
+        include:
+          - platform_version: "pioarduino-55.03.37"
+            platform_spec: "https://github.com/pioarduino/platform-espressif32/releases/download/55.03.37/platform-espressif32.zip"
+            platform_label: "pioarduino 55.03.37"
+          - platform_version: "pioarduino-54.03.21-2"
+            platform_spec: "https://github.com/pioarduino/platform-espressif32/releases/download/54.03.21-2/platform-espressif32.zip"
+            platform_label: "pioarduino 54.03.21-2"
+          - platform_version: "stock-6.13.0"
+            platform_spec: "espressif32@6.13.0"
+            platform_label: "stock espressif32 6.13.0"
     env:
-      PLATFORM_URL: "https://github.com/pioarduino/platform-espressif32/releases/download/${{ matrix.platform_version }}/platform-espressif32.zip"
+      PLATFORMIO_CORE_DIR: /home/runner/pio-${{ matrix.platform_version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -58,30 +65,41 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.platformio/packages
-            ~/.platformio/platforms
+            /home/runner/pio-${{ matrix.platform_version }}/packages
+            /home/runner/pio-${{ matrix.platform_version }}/platforms
           key: pio-${{ runner.os }}-${{ matrix.platform_version }}
 
       - name: Install PlatformIO and platform
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           pip install platformio
-          sed -i "s|platform = .*|platform = $PLATFORM_URL|" \
+          sed -i "s|platform = .*|platform = ${{ matrix.platform_spec }}|" \
             tests/fixture/platformio.ini
           cd tests/fixture && pio pkg install
 
   test-fixture:
-    name: "Test fixture (${{ matrix.platform_version }})"
+    name: "Test fixture (${{ matrix.platform_label }})"
     runs-on: ubuntu-latest
     needs: setup
+    continue-on-error: ${{ matrix.experimental || false }}
     strategy:
       fail-fast: false
       matrix:
-        platform_version:
-          - "55.03.37"   # IDF 5.5.2
-          - "54.03.21-2" # IDF 5.4.2
+        include:
+          - platform_version: "pioarduino-55.03.37"
+            platform_spec: "https://github.com/pioarduino/platform-espressif32/releases/download/55.03.37/platform-espressif32.zip"
+            platform_label: "pioarduino 55.03.37"
+            experimental: false
+          - platform_version: "pioarduino-54.03.21-2"
+            platform_spec: "https://github.com/pioarduino/platform-espressif32/releases/download/54.03.21-2/platform-espressif32.zip"
+            platform_label: "pioarduino 54.03.21-2"
+            experimental: false
+          - platform_version: "stock-6.13.0"
+            platform_spec: "espressif32@6.13.0"
+            platform_label: "stock espressif32 6.13.0"
+            experimental: true
     env:
-      PLATFORM_URL: "https://github.com/pioarduino/platform-espressif32/releases/download/${{ matrix.platform_version }}/platform-espressif32.zip"
+      PLATFORMIO_CORE_DIR: /home/runner/pio-${{ matrix.platform_version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -93,33 +111,39 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.platformio/packages
-            ~/.platformio/platforms
+            /home/runner/pio-${{ matrix.platform_version }}/packages
+            /home/runner/pio-${{ matrix.platform_version }}/platforms
           key: pio-${{ runner.os }}-${{ matrix.platform_version }}
 
       - name: Install PlatformIO
         run: pip install platformio
 
-      - name: Override platform version
-        run: |
-          sed -i "s|platform = .*|platform = $PLATFORM_URL|" \
-            tests/fixture/platformio.ini
-
       - name: Run integration tests
-        run: ./tests/test_ulp_cmake.sh -v
+        run: ./tests/test_ulp_cmake.sh -v -p '${{ matrix.platform_spec }}'
 
   build-examples:
-    name: "Build examples (${{ matrix.platform_version }})"
+    name: "Build examples (${{ matrix.platform_label }})"
     runs-on: ubuntu-latest
     needs: setup
+    continue-on-error: ${{ matrix.experimental || false }}
     strategy:
       fail-fast: false
       matrix:
-        platform_version:
-          - "55.03.37"   # IDF 5.5.2
-          - "54.03.21-2" # IDF 5.4.2
+        include:
+          - platform_version: "pioarduino-55.03.37"
+            platform_spec: "https://github.com/pioarduino/platform-espressif32/releases/download/55.03.37/platform-espressif32.zip"
+            platform_label: "pioarduino 55.03.37"
+            experimental: false
+          - platform_version: "pioarduino-54.03.21-2"
+            platform_spec: "https://github.com/pioarduino/platform-espressif32/releases/download/54.03.21-2/platform-espressif32.zip"
+            platform_label: "pioarduino 54.03.21-2"
+            experimental: false
+          - platform_version: "stock-6.13.0"
+            platform_spec: "espressif32@6.13.0"
+            platform_label: "stock espressif32 6.13.0"
+            experimental: true
     env:
-      PLATFORM_URL: "https://github.com/pioarduino/platform-espressif32/releases/download/${{ matrix.platform_version }}/platform-espressif32.zip"
+      PLATFORMIO_CORE_DIR: /home/runner/pio-${{ matrix.platform_version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -131,8 +155,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.platformio/packages
-            ~/.platformio/platforms
+            /home/runner/pio-${{ matrix.platform_version }}/packages
+            /home/runner/pio-${{ matrix.platform_version }}/platforms
           key: pio-${{ runner.os }}-${{ matrix.platform_version }}
 
       - name: Install PlatformIO
@@ -144,7 +168,7 @@ jobs:
       - name: Override platform version in examples
         run: |
           for ini in examples/*/platformio.ini; do
-            sed -i "s|platform = .*|platform = $PLATFORM_URL|" "$ini"
+            sed -i "s|platform = .*|platform = ${{ matrix.platform_spec }}|" "$ini"
           done
 
       - name: Build all examples
