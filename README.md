@@ -24,6 +24,7 @@ both `espressif32` and `pioarduino` platforms.
 - **espressif32 and pioarduino** — tested in CI against both
 
 **Requires ESP-IDF >= 5.4** (stock espressif32 >= 6.10.0, pioarduino >= 54.x).
+ESP-IDF 5.4 introduced `IDFULPProject.cmake`, the standard CMake API for ULP builds.
 
 ## Quick start
 
