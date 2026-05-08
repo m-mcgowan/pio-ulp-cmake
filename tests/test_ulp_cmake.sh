@@ -58,6 +58,35 @@
 #     - ulp_sensor build directory is NOT created
 #   Confirms that the tool only builds explicitly registered projects.
 #
+# Test 8 — Bootloader does NOT inherit ULP -T flags (race regression)
+#   Wipes the entire build directory (Test 1 only wipes the ULP subdir, so
+#   the bootloader.elf and its dependencies survive across runs and the
+#   bootloader's race against the parallel ULP build is masked). On a truly
+#   fresh state with parallel build, the bug surfaces as:
+#
+#     Linking .pio/build/<env>/bootloader.elf
+#     ld: cannot open linker script file ...ulp_main.ld: No such file or directory
+#
+#   The bootloader has no SCons Depends on the ULP build_target and inherits
+#   `-T ulp_main.ld` via env.Clone() in espidf.py — wrong target *and* a
+#   race. This test reproduces it by:
+#     - Wiping $BUILD_DIR fully so SCons must rebuild everything in parallel.
+#     - Confirming both bootloader.elf and firmware.bin land at the end.
+#     - Inspecting the bootloader's recorded link command for any -T
+#       <build-dir>/ulp/.../*.ld path. If the bootloader env still has the
+#       inherited -T flag, the race is just dormant and will recur — fail
+#       the test even if this build happened to win the race.
+#
+# Test 9 — Bootloader does NOT inherit ULP -T flags (espidf-only)
+#   Same race regression as Test 8, but for framework=espidf. The
+#   espidf-only path surfaces an additional failure mode where SCons
+#   MergeFlags deduplicates equal LINKFLAGS strings and orphans one ULP
+#   path (drops its `-T` partner), leaving a bare path that gcc
+#   interprets as an input file. Wipes esp32s3-idf, runs `pio run -v`,
+#   and inspects the bootloader.elf link command for any ULP path
+#   (`-T` paired or bare). Also verifies firmware.elf has both
+#   `-T <ulp_*.ld>` pairs intact.
+#
 # Usage:
 #   ./tests/test_ulp_cmake.sh -p <platform_spec>       # test a specific platform
 #   ./tests/test_ulp_cmake.sh -p <platform_spec> -v    # verbose output on failure
@@ -151,20 +180,29 @@ run_build() {
     fi
 }
 
-# Save original platformio.ini and main.cpp; restore on exit.
-# The -p flag overrides the platform line for the test run.
-ORIG_INI="$(cat "$PROJECT_DIR/platformio.ini")"
+# Snapshot pristine files. The trap restores them on script exit so the
+# working tree isn't left with the platform override applied.
+PRISTINE_INI="$(cat "$PROJECT_DIR/platformio.ini")"
 ORIG_SRC_DIR="$PROJECT_DIR/src"
 ORIG_MAIN="$(cat "$ORIG_SRC_DIR/main.cpp")"
+restore_pristine() {
+    echo "$PRISTINE_INI" > "$PROJECT_DIR/platformio.ini"
+    echo "$ORIG_MAIN" > "$ORIG_SRC_DIR/main.cpp"
+}
+trap restore_pristine EXIT
+
+# Override the platform line in platformio.ini for all envs in the file.
+sed -i.bak "s|^platform = .*|platform = $PLATFORM_SPEC|" "$PROJECT_DIR/platformio.ini"
+rm -f "$PROJECT_DIR/platformio.ini.bak"
+
+# Snapshot the post-sed (test-baseline) state. Tests that mutate the ini
+# (e.g. Test 7) call `restore_originals` to return to this baseline,
+# preserving the platform override for subsequent tests.
+ORIG_INI="$(cat "$PROJECT_DIR/platformio.ini")"
 restore_originals() {
     echo "$ORIG_INI" > "$PROJECT_DIR/platformio.ini"
     echo "$ORIG_MAIN" > "$ORIG_SRC_DIR/main.cpp"
 }
-trap restore_originals EXIT
-
-# Override the platform line in platformio.ini
-sed -i.bak "s|^platform = .*|platform = $PLATFORM_SPEC|" "$PROJECT_DIR/platformio.ini"
-rm -f "$PROJECT_DIR/platformio.ini.bak"
 
 
 # ===========================================================================
@@ -421,6 +459,165 @@ fi
 
 # Restore originals
 restore_originals
+
+
+# ===========================================================================
+echo ""
+echo "=== Test 8: Bootloader does not inherit ULP -T flags (race regression) ==="
+# ===========================================================================
+#
+# Pre-existing tests use the espidf-only env (esp32s3-idf). The bug only
+# surfaces under arduino+espidf, which routes the bootloader build through
+# a path that env.Clone()s the parent env (espidf.py:1644 in pioarduino
+# 55.x), inheriting the ULP `-T ulp_*.ld` flags appended by
+# _standalone_main. The fixture defines a parallel env esp32s3-arduino-idf
+# specifically to exercise this; Test 8 builds against it from a fully
+# wiped state so SCons must re-link bootloader.elf and re-generate
+# ulp_main.ld in parallel.
+#
+# The bug typically presents as a link-time error:
+#   ld: cannot open linker script file ...ulp_main.ld: No such file
+# but it can also present as a successful build whose bootloader.elf
+# nonetheless still has `-T ulp_*.ld` in its link command — the race is
+# dormant in that case, not fixed. Test 8 fails in either case.
+
+T8_ENV="esp32s3-arduino-idf"
+T8_BUILD_DIR="$PROJECT_DIR/.pio/build/$T8_ENV"
+T8_LOG="$PROJECT_DIR/.pio/test_build_t8.log"
+
+# Test 8 exercises the arduino+espidf bootloader path. Stock espressif32
+# (versioned 6.x) bundles arduino-esp32 v2.x with ESP-IDF 4.4.x for that
+# framework combination, which lacks `IDFULPProject.cmake` (introduced
+# in IDF 5.4) and so fails the ULP cmake build before the bootloader
+# even links — no useful signal about the race regression. Skip Test 8
+# for stock; pioarduino (versioned 50+ or via release URL) keeps newer
+# IDF in the arduino+espidf path and is what reproduces the bug.
+if [[ "$PLATFORM_SPEC" =~ ^espressif32@6\. ]]; then
+    skip "Test 8 not applicable to stock espressif32 6.x (arduino+espidf uses IDF 4.x)"
+else
+# Force the truly clean state: wipe the env build dir AND any cached
+# libdeps for this env (so external deps re-resolve cleanly too).
+rm -rf "$T8_BUILD_DIR" "$PROJECT_DIR/.pio/libdeps/$T8_ENV"
+
+mkdir -p "$PROJECT_DIR/.pio"
+if pio run -d "$PROJECT_DIR" -e "$T8_ENV" -v > "$T8_LOG" 2>&1; then
+    if [[ -f "$T8_BUILD_DIR/bootloader.elf" ]] && [[ -f "$T8_BUILD_DIR/firmware.bin" ]]; then
+        pass "Clean build (arduino+espidf, full wipe) produces bootloader.elf + firmware.bin"
+    else
+        fail "Clean build (arduino+espidf, full wipe) missing bootloader.elf or firmware.bin"
+    fi
+
+    # The build won the race — but did the bootloader still get the
+    # spurious -T flag? If yes, the race is dormant, not gone. Inspect the
+    # captured (verbose) link command for `-T <build-dir>/ulp/.../*.ld`.
+    BOOT_CMD=$(grep -E "^[^ ]*-elf-gcc.*-o[ ]+[^ ]*bootloader\\.elf" "$T8_LOG" || true)
+    if [[ -n "$BOOT_CMD" ]]; then
+        if echo "$BOOT_CMD" \
+                | grep -qE -- "-T[ ]+[^ ]*/\\.pio/build/[^/]+/ulp/[^ ]+\\.ld"; then
+            fail "Bootloader link command still contains -T ulp/.../*.ld (race dormant)"
+            if [[ $VERBOSE -eq 1 ]]; then
+                echo "    Bootloader link command:"
+                echo "    $BOOT_CMD" | tr ' ' '\n' | grep -E "^-T|ulp_.*\\.ld" | head -20
+            fi
+        else
+            pass "Bootloader link command has no ULP -T flag"
+        fi
+    else
+        skip "Bootloader full link command not captured in build log"
+    fi
+else
+    fail "Clean build (arduino+espidf, full wipe) failed — bootloader-link race regressed"
+    if [[ $VERBOSE -eq 1 ]]; then
+        echo "--- Tail of build log ---"
+        tail -40 "$T8_LOG"
+        echo "--- End ---"
+    else
+        echo "    (use -v to see build output, or check $T8_LOG)"
+    fi
+fi
+fi  # end of stock-skip guard
+
+
+# ===========================================================================
+echo ""
+echo "=== Test 9: Bootloader does not inherit ULP -T flags (espidf-only) ==="
+# ===========================================================================
+#
+# Test 8 covers the arduino+espidf path. Test 9 covers framework=espidf.
+# Both paths route the bootloader build through `bootloader_env =
+# env.Clone()` in espidf.py, but the espidf-only flow surfaced a second
+# failure mode: `bootloader_env.MergeFlags(link_args)` deduplicates equal
+# LINKFLAGS items (Environment.py:1108-12, "keep right-most"); two `-T`
+# tokens appended by _standalone_main collapse to one, orphaning the
+# first ULP path as a bare argument. Strip-on-bootloader workarounds
+# could not match the orphan because it had no `-T` partner.
+#
+# The fix moves the ULP `-T` flags off of parent LINKFLAGS entirely and
+# applies them via a PreAction on firmware.elf (so bootloader_env never
+# sees them). This test wipes esp32s3-idf and re-runs `pio run -v` so
+# the bootloader.elf link command is captured for inspection — it must
+# have zero ULP `-T` flags. Without the fix, the bootloader link command
+# would either (a) hard-fail in incremental rebuild (Test 6 catches it
+# indirectly) or (b) succeed-with-bare-orphan-path on clean build (only
+# inspection catches it).
+
+T9_ENV="esp32s3-idf"
+T9_BUILD_DIR="$PROJECT_DIR/.pio/build/$T9_ENV"
+T9_LOG="$PROJECT_DIR/.pio/test_build_t9.log"
+
+# Wipe build dir so SCons must re-link bootloader.elf and we can capture
+# its full link command in the verbose log.
+rm -rf "$T9_BUILD_DIR"
+
+mkdir -p "$PROJECT_DIR/.pio"
+if pio run -d "$PROJECT_DIR" -e "$T9_ENV" -v > "$T9_LOG" 2>&1; then
+    if [[ -f "$T9_BUILD_DIR/bootloader.elf" ]] && [[ -f "$T9_BUILD_DIR/firmware.bin" ]]; then
+        pass "Clean build (espidf-only, full wipe) produces bootloader.elf + firmware.bin"
+    else
+        fail "Clean build (espidf-only, full wipe) missing bootloader.elf or firmware.bin"
+    fi
+
+    BOOT_CMD=$(grep -E "^[^ ]*-elf-gcc.*-o[ ]+[^ ]*bootloader\\.elf" "$T9_LOG" || true)
+    if [[ -n "$BOOT_CMD" ]]; then
+        # Match either the paired form `-T <ulp-path>` or any bare
+        # ULP path (the latter catches MergeFlags-orphaned paths that
+        # lost their `-T` partner).
+        if echo "$BOOT_CMD" \
+                | grep -qE -- "-T[ ]+[^ ]*/\\.pio/build/[^/]+/ulp/[^ ]+\\.ld|[ ][^ -][^ ]*/\\.pio/build/[^/]+/ulp/[^ ]+\\.ld"; then
+            fail "Bootloader link command contains ULP linker-script reference (race dormant)"
+            if [[ $VERBOSE -eq 1 ]]; then
+                echo "    Bootloader link command (filtered):"
+                echo "    $BOOT_CMD" | tr ' ' '\n' | grep -E "^-T|ulp/.*\\.ld" | head -20
+            fi
+        else
+            pass "Bootloader link command has no ULP -T or bare ULP path"
+        fi
+    else
+        skip "Bootloader full link command not captured in build log"
+    fi
+
+    # Verify firmware.elf DOES have both ULP -T flags (with proper -T pair).
+    FW_CMD=$(grep -E "^[^ ]*-elf-(g\\+\\+|gcc).*-o[ ]+[^ ]*firmware\\.elf" "$T9_LOG" || true)
+    if [[ -n "$FW_CMD" ]]; then
+        FW_ULP_T=$(echo "$FW_CMD" | grep -oE -- "-T[ ]+[^ ]*/\\.pio/build/[^/]+/ulp/[^ ]+\\.ld" | wc -l | tr -d ' ')
+        if [[ "$FW_ULP_T" == "2" ]]; then
+            pass "Firmware link command has both ULP -T flags properly paired"
+        else
+            fail "Firmware link command has $FW_ULP_T ULP -T flags (expected 2)"
+        fi
+    else
+        skip "Firmware full link command not captured in build log"
+    fi
+else
+    fail "Clean build (espidf-only, full wipe) failed"
+    if [[ $VERBOSE -eq 1 ]]; then
+        echo "--- Tail of build log ---"
+        tail -40 "$T9_LOG"
+        echo "--- End ---"
+    else
+        echo "    (use -v to see build output, or check $T9_LOG)"
+    fi
+fi
 
 
 # ===========================================================================

@@ -576,8 +576,48 @@ def _standalone_main(env):
         env.Depends(obj, asm_dep)
         env.Append(PIOBUILDFILES=[obj])
 
-    for app_name, ld_script in ld_scripts:
-        env.Append(LINKFLAGS=["-T", ld_script])
+    # ULP linker scripts (`PROVIDE(ulp_<sym> = 0xNNN)`) are firmware-only.
+    # They must NOT be appended to the parent env's LINKFLAGS, because:
+    #
+    #  1. The bootloader build clones the parent env (espidf.py:1644
+    #     `bootloader_env = env.Clone()`) and the cloned LINKFLAGS would
+    #     carry our `-T <ulp_*.ld>` pairs into the bootloader link. The
+    #     bootloader doesn't reference any ULP symbol and there is no
+    #     SCons edge from bootloader.elf to the ULP build target, so it
+    #     races with `_build_and_reprefix` and fails with
+    #     "cannot open linker script file".
+    #
+    #  2. Even with a strip-on-bootloader workaround, espidf.py later
+    #     calls `bootloader_env.MergeFlags(link_args)`. SCons MergeFlags
+    #     deduplicates equal LINKFLAGS strings (Environment.py:1108-12,
+    #     reverse-iteration "keep right-most"); two `-T` tokens collapse
+    #     to one, leaving the first ULP path orphaned (no `-T` prefix)
+    #     and unreachable to a pair-aware strip.
+    #
+    # Apply the `-T` flags via a PreAction on firmware.elf instead. The
+    # PreAction mutates env.LINKFLAGS at link time, so the firmware's
+    # gcc invocation picks them up but bootloader_env (cloned earlier)
+    # never sees them.
+    firmware_elf = str(Path("$BUILD_DIR") / "${PROGNAME}.elf")
+    if ld_scripts:
+        ulp_link_flags = []
+        for app_name, ld_script in ld_scripts:
+            ulp_link_flags.extend(["-T", ld_script])
+
+        def _add_ulp_linkflags(target, source, env):
+            env.Append(LINKFLAGS=ulp_link_flags)
+
+        env.AddPreAction(firmware_elf, _add_ulp_linkflags)
+
+    # Wire firmware.elf's link to the ULP build_target so the .ld file
+    # is up-to-date before the firmware links. The pre-existing
+    # Depends($PROGNAME.elf, ulp_assembly) covers the .bin embedding,
+    # but build_target also produces .h and .ld, and the firmware needs
+    # them via this script's CPPPATH / LIBPATH appends.
+    build_targets = env.get("__PIO_ULP_BUILD_TARGETS", [])
+    if build_targets:
+        for build_target in build_targets:
+            env.Depends(firmware_elf, build_target)
 
 
 # ---------------------------------------------------------------------------

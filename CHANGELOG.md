@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Bootloader-link race when ULP linker scripts leaked into the
+  bootloader's environment via `env.Clone()` in pioarduino's
+  `build_bootloader`. The leak was a direct hard-fail
+  ("cannot open linker script file") on clean `arduino, espidf` builds
+  and an incremental-rebuild race on `espidf`-only builds, the latter
+  surviving an obvious strip workaround because SCons `MergeFlags`
+  deduplicates equal LINKFLAGS strings and orphans one ULP path. The
+  fix moves `-T <ulp_*.ld>` flags off the parent env entirely and
+  applies them via a PreAction on `${PROGNAME}.elf`, so cloned envs
+  never inherit them. Added Test 9 (espidf-only) alongside the
+  pre-existing Test 8 (arduino+espidf) to regression-check the
+  bootloader link command.
+
 ## [0.1.0] - 2026-03-17
 
 ### Added

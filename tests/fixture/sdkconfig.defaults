@@ -3,3 +3,8 @@ CONFIG_ULP_COPROC_ENABLED=y
 # CONFIG_ULP_COPROC_TYPE_FSM is not set
 CONFIG_ULP_COPROC_TYPE_RISCV=y
 CONFIG_ULP_COPROC_RESERVE_MEM=4096
+
+# arduino-esp32 (used by Test 8's esp32s3-arduino-idf env) requires
+# 1000 Hz tick rate. Setting it here also applies to esp32s3-idf which
+# is harmless.
+CONFIG_FREERTOS_HZ=1000
