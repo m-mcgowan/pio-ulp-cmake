@@ -4,3 +4,5 @@ examples/
 sdkconfig.esp32s3-idf
 sdkconfig.esp32s3-test
 tests/fixture/test/__pycache__
+tests/fixture/dependencies.lock
+tests/fixture/sdkconfig.esp32s3-*
